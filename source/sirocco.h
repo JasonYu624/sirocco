@@ -144,7 +144,15 @@ extern int NWAVE_NOW;         /**< Either NWAVE_IONIZ or NWAVE_EXTRACT depending
                                 */
 #define NWAVE_MIN   100       /**< The minimum number of wavelength bins in during spectral cycles
                                */
+/* LQ project, 2026-08-23: guarded so the cap can be overridden at build time
+   (-DMAXSCAT=...) without editing this file.  The default is unchanged, so a
+   plain build is bit-identical to upstream.  Needed because both R1 depth arms
+   hit the cap -- max scatters seen 19893 (tau_es=10) and 19986 (tau_es=30) --
+   so "does the cap bias the answer" became a question that has to be measured
+   rather than assumed. */
+#ifndef MAXSCAT
 #define MAXSCAT    20000
+#endif
 
 /* Define the structures */
 #include "math_struc.h"

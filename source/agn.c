@@ -19,6 +19,7 @@
 
 #include "atomic.h"
 #include "sirocco.h"
+#include "models.h"          /* LQ: comp[] / xmod, for the model-band normalisation fallback in agn_init */
 #include "log.h"
 
 
@@ -60,6 +61,8 @@ agn_init (r, lum, alpha, freqmin, freqmax, ioniz_or_extract, f)
   double t;
   double scaling;               //The scaling factor to get from a model to get the correct 2-10keV luminosity
   double emit, emit_2_10;
+  double mod_fmin, mod_fmax;    //LQ: the model's own band, used when 2-10keV is empty
+  int nwav;
   int spectype;
 
   if (ioniz_or_extract == CYCLE_EXTRACT)
@@ -74,8 +77,38 @@ agn_init (r, lum, alpha, freqmin, freqmax, ioniz_or_extract, f)
     emit_2_10 = emittance_continuum (spectype, 4.84e17, 2.42e18, 0.0, 0.0);
     if (emit_2_10 <= 0.0)
     {
-      Error ("agn_init: Supplied model SED has no power in 2-10keV band - cannot continue\n");
-      exit (0);
+      /* LQ project, 2026-08-19: normalise on the model's own band rather than
+         aborting.
+
+         The 2-10keV anchor is an AGN convention -- an AGN has an X-ray corona
+         and its 2-10keV luminosity is THE standard normalisation.  A cool
+         source has no power there by construction, so for such a model this
+         test is a category error rather than a sanity check.  For the TDE wind
+         this was added for, the Planck fraction above 2keV is 1.1e-16 at the
+         hottest point in the flow and 4.8e-48 at the handoff radius; a tabulated
+         SED that does show something there is showing a numerical floor, not
+         emission, and normalising on it makes the entire SED hostage to that
+         floor (it did: a 1.5% overshoot that took a day to trace).
+
+         Models that DO have 2-10keV power never reach this branch, so AGN
+         setups are bit-for-bit unaffected; only the case that used to exit(0)
+         behaves differently.  For those models Central_object.luminosity is
+         read as the luminosity in the model's own band, which the message below
+         states explicitly.
+
+         xmod is already populated by the call above, so w[] is valid here. */
+      nwav = comp[spectype].nwaves;
+      mod_fmax = VLIGHT / (comp[spectype].xmod.w[0] * ANGSTROM) * (1. - 1.e-10);
+      mod_fmin = VLIGHT / (comp[spectype].xmod.w[nwav - 1] * ANGSTROM) * (1. + 1.e-10);
+      emit_2_10 = emittance_continuum (spectype, mod_fmin, mod_fmax, 0.0, 0.0);
+      Error
+        ("agn_init: model SED has no power in 2-10keV; normalising on the model's own band %.4e-%.4e Hz (%.4g-%.4g eV) instead. Central_object.luminosity is read as L in THAT band.\n",
+         mod_fmin, mod_fmax, HEV * mod_fmin, HEV * mod_fmax);
+      if (emit_2_10 <= 0.0)
+      {
+        Error ("agn_init: Supplied model SED has no power anywhere - cannot continue\n");
+        exit (0);
+      }
     }
     scaling = lum / emit_2_10;  //This gives us a scaling factor which can be applied to whatever band we are dealing with
 

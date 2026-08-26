@@ -242,9 +242,27 @@ create_master_table (ndom, rootname)
   c[22] = get_one (ndom, "nscat_bf");
   strcpy (column_name[22], "nscat_bf");
 
+  /* LQ project, 2026-08-23.  The radial radiative FLUX, so that L(r) = 4 pi r^2
+     F_r can be read off a table.  Sirocco already computes this -- F_vis/F_UV/
+     F_Xray accumulate w_ave*ds*lmn and are divided by the cell volume
+     (estimators_simple.c:330-365,762), which is the Monte Carlo flux estimator,
+     and in SPHERICAL geometry element [0] is exactly the radial component.  The
+     three bands partition the whole spectrum at UV_low = 7.4e14 and
+     UV_hi = 3e16 Hz, so their sum is the total flux with nothing left over.
+     Nothing else written by windsave2table is a flux: cell_spec_flux is named
+     flux but is J_nu, dmo_dt is resonant-scattering momentum only, and
+     cool_adiab is the gas pdV term.  Both the last-cycle and the persistent
+     (cycle-smoothed) estimators are written; they should agree on a converged
+     run, and disagreement is the diagnostic. */
+  c[23] = get_one (ndom, "F_rad_r");
+  strcpy (column_name[23], "F_rad_r");
+
+  c[24] = get_one (ndom, "F_rad_r_per");
+  strcpy (column_name[24], "F_rad_per");
+
 
   /* This should be the maxium number above +1 */
-  ncols = 23;
+  ncols = 25;
 
 
   converge = get_one (ndom, "converge");
@@ -1511,6 +1529,18 @@ get_one (ndom, variable_name)
       else if (strcmp (variable_name, "nscat_res") == 0)
       {
         x[n] = plasmamain[nplasma].nscat_res;
+      }
+      else if (strcmp (variable_name, "F_rad_r") == 0)
+      {
+        /* Sum of the three bands = total, see create_master_table. */
+        x[n] = (plasmamain[nplasma].F_vis[0] + plasmamain[nplasma].F_UV[0]
+                + plasmamain[nplasma].F_Xray[0]);
+      }
+      else if (strcmp (variable_name, "F_rad_r_per") == 0)
+      {
+        x[n] = (plasmamain[nplasma].F_vis_persistent[0]
+                + plasmamain[nplasma].F_UV_persistent[0]
+                + plasmamain[nplasma].F_Xray_persistent[0]);
       }
       else if (strcmp (variable_name, "nscat_bf") == 0)
       {
