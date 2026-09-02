@@ -101,6 +101,7 @@ char windsave2table_help[] = "Usage: windsave2table [-r or -s] [-a] [-x wincell_
 -a             Print additional tables with more information about ions  \n\
 -edge          Include edge cells in the various tables  \n\
 -lev           Also write the fractional level populations (the levden array) and their metadata \n\
+-opac          Also write the frequency-resolved CONTINUUM opacity (bf, ff, es) per cell \n\
 --version      Return version info and quit \n\
 -x windcell    In addition to the normal tables, print out the detailed spectra in a specific windcell\n\
 -xall          In addition to the normal tables, print out a large file containing all of the detailed cell spectra\n\
@@ -109,7 +110,8 @@ char windsave2table_help[] = "Usage: windsave2table [-r or -s] [-a] [-x wincell_
 ";
 
 void
-parse_arguments (int argc, char *argv[], char root[], int *ion_switch, int *spec_switch, int *edge_switch, int *lev_switch)
+parse_arguments (int argc, char *argv[], char root[], int *ion_switch, int *spec_switch, int *edge_switch, int *lev_switch,
+                 int *opac_switch)
 {
   int i;
   char *fget_rc;
@@ -119,6 +121,7 @@ parse_arguments (int argc, char *argv[], char root[], int *ion_switch, int *spec
   *spec_switch = -1;
   *edge_switch = FALSE;
   *lev_switch = FALSE;
+  *opac_switch = FALSE;
 
 
   if (argc == 1)
@@ -187,6 +190,11 @@ parse_arguments (int argc, char *argv[], char root[], int *ion_switch, int *spec
         *lev_switch = TRUE;
         printf ("Fractional level populations (levden) will be written\n");
       }
+      else if (!strncmp (argv[i], "-opac", 5))
+      {
+        *opac_switch = TRUE;
+        printf ("Frequency-resolved continuum opacity will be written\n");
+      }
       else if (!strncmp (argv[i], "-h", 2))
       {
         printf ("%s", windsave2table_help);
@@ -250,6 +258,7 @@ main (argc, argv)
   int spec_switch;
   int edge_switch;
   int lev_switch;
+  int opac_switch;
   int ndom;
 
 
@@ -264,7 +273,7 @@ main (argc, argv)
    * last compiled and on what commit this was
    */
 
-  parse_arguments (argc, argv, root, &ion_switch, &spec_switch, &edge_switch, &lev_switch);
+  parse_arguments (argc, argv, root, &ion_switch, &spec_switch, &edge_switch, &lev_switch, &opac_switch);
 
   printf ("Reading data from file %s\n", root);
 
@@ -295,7 +304,7 @@ main (argc, argv)
   printf ("Read wind_file %s\n", windsavefile);
   printf ("Read Atomic data from %s\n", geo.atomic_filename);
 
-  do_windsave2table (root, ion_switch, edge_switch, lev_switch);
+  do_windsave2table (root, ion_switch, edge_switch, lev_switch, opac_switch);
 
   if (spec_switch == -2)
   {

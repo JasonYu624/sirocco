@@ -49,11 +49,12 @@ int xedge = FALSE;
  **********************************************************/
 
 int
-do_windsave2table (root, ion_switch, edge_switch, lev_switch)
+do_windsave2table (root, ion_switch, edge_switch, lev_switch, opac_switch)
      char *root;
      int ion_switch;
      int edge_switch;
      int lev_switch;
+     int opac_switch;
 {
   int ndom, i;
   char rootname[LINELENGTH];
@@ -83,6 +84,11 @@ do_windsave2table (root, ion_switch, edge_switch, lev_switch)
     if (lev_switch)
     {
       create_levden_table (ndom, rootname);
+    }
+
+    if (opac_switch)
+    {
+      create_opacity_table (ndom, rootname);
     }
 
     if (ion_switch != 99)
@@ -1500,6 +1506,240 @@ create_levden_table (ndom, rootname)
   free (cfg);
 
   Log ("create_levden_table: wrote %d levels for %d cells to %s\n", nlte_levels, ndim2, filename);
+
+  return (0);
+}
+
+
+/**********************************************************/
+/**
+ * @brief      makes an astropy table of the frequency-resolved CONTINUUM
+ *   opacity in every wind cell, using sirocco's own opacity routines
+ *
+ * @param [in] int  ndom   The domain number
+ * @param [in] char  rootname[]   The rootname of the windsave file
+ * @return     0 on completion
+ *
+ * @details
+ *
+ * Three files are written:
+ *
+ *   rootname.opacity.txt       one row per wind cell; r, i, inwind, ne, rho,
+ *                              kbf_nuse, then bf_NNNN, ff_NNNN and es_NNNN for
+ *                              each frequency of the grid
+ *   rootname.opacity_freq.txt  the frequency grid, in Hz and in eV
+ *   rootname.opacity_check.txt the self-check described below
+ *
+ * The values are kappa PER UNIT LENGTH (cm^-1), which is what sirocco itself
+ * accumulates: sirocco_optd_trans.c forms kappa_bf + kappa_ff + klein_nishina *
+ * ne and multiplies by a path length to get an optical depth.  Divide by rho
+ * for a mass opacity.
+ *
+ * ### Notes ###
+ *
+ * NO MEAN IS FORMED HERE.  The frequency-resolved opacity is written out and
+ * the Planck or Rosseland mean, over whatever group structure the comparison
+ * needs, is formed downstream.  Baking a mean into C would fix a definition in
+ * the place where it is least visible, and the two means differ enormously for
+ * line opacity, so which one is in use has to stay legible.
+ *
+ * ⚠️ THIS IS CONTINUUM ONLY: bound-free plus free-free plus electron
+ * scattering.  Line opacity is NOT included and is NOT extractable this way --
+ * for macro ions it lives in the macro-atom state and for simple ions it is
+ * built per line inside two_level_atom, which stores nothing per cell.  An
+ * absent line bump in a plot of this table is a MISSING MEASUREMENT and not a
+ * physical statement about sirocco.
+ *
+ * ⚠️ kappa_bf SUMS A PRUNED LIST.  kbf_need() fills xplasma->kbf_use with the
+ * bf transitions whose threshold lies in (freq_min/3, freq_max) and whose
+ * optical depth over a typical in-cell path exceeds 1e-6 (plus every macro,
+ * ground-state and vfky transition regardless).  That pruning is the transfer's
+ * own, so this reproduces the opacity sirocco applied -- but the frequency
+ * window matters, and the window used here is the span of the dump grid, which
+ * may be wider than the banding the run itself used.  kbf_nuse is written per
+ * cell so the size of the retained list is visible.
+ *
+ * ⚠️ kappa_ff READS plasmamain[].kappa_ff_factor, which is populated by
+ * pop_kappa_ff_array() in run.c just before the photons are transported, and is
+ * a plain struct member so it is restored with the windsave.  Rather than
+ * assume that, the routine evaluates kappa_ff before and after recomputing the
+ * factor and writes both to the check file: if the restored value had been
+ * stale or zero the two would differ, and this would say so instead of
+ * silently using a wrong opacity.
+ *
+ **********************************************************/
+
+#define OPAC_NFREQ   700
+#define OPAC_FMIN    1.0e12
+#define OPAC_FMAX    1.0e19
+
+int
+create_opacity_table (ndom, rootname)
+     int ndom;
+     char rootname[];
+{
+  char filename[132];
+  int nstart, ndim2;
+  int i, j, n, nplasma;
+  double *nu;
+  double lf0, lf1, dlf;
+  double kbf, kff, kes;
+  double ff_before, ff_after, worst, rel;
+  double *ff_pre;
+  int worst_cell;
+  double nu_probe;
+  PlasmaPtr xp;
+  FILE *fptr;
+
+  nstart = zdom[ndom].nstart;
+  ndim2 = zdom[ndom].ndim2;
+
+  /* The frequency grid, logarithmic */
+
+  nu = (double *) calloc (sizeof (double), OPAC_NFREQ);
+  if (nu == NULL)
+  {
+    Error ("create_opacity_table: could not allocate the frequency grid\n");
+    return (0);
+  }
+  lf0 = log10 (OPAC_FMIN);
+  lf1 = log10 (OPAC_FMAX);
+  dlf = (lf1 - lf0) / (OPAC_NFREQ - 1);
+  for (j = 0; j < OPAC_NFREQ; j++)
+  {
+    nu[j] = pow (10.0, lf0 + j * dlf);
+  }
+
+  sprintf (filename, "%.100s.opacity_freq.txt", rootname);
+  fptr = fopen (filename, "w");
+  fprintf (fptr, "%6s %14s %14s\n", "col", "nu_Hz", "E_eV");
+  for (j = 0; j < OPAC_NFREQ; j++)
+  {
+    fprintf (fptr, "%6d %14.7e %14.7e\n", j, nu[j], nu[j] * HEV);
+  }
+  fclose (fptr);
+
+  /* Select the bound-free transitions to be summed, over the whole span of the
+     dump grid so that every frequency written has its edges considered. */
+
+  kbf_need (OPAC_FMIN, OPAC_FMAX);
+
+  /* The self-check on kappa_ff_factor.  Probe at a frequency where free-free
+     is not negligible; the absolute value does not matter, only whether
+     recomputing the factor changes it. */
+
+  nu_probe = 1.0e14;
+  worst = 0.0;
+  worst_cell = -1;
+
+  ff_pre = (double *) calloc (sizeof (double), ndim2);
+  if (ff_pre == NULL)
+  {
+    Error ("create_opacity_table: could not allocate the ff check array\n");
+    free (nu);
+    return (0);
+  }
+  for (i = 0; i < ndim2; i++)
+  {
+    ff_pre[i] = -1.0;
+    if (wmain[nstart + i].inwind >= 0)
+    {
+      ff_pre[i] = kappa_ff (&plasmamain[wmain[nstart + i].nplasma], nu_probe);
+    }
+  }
+
+  pop_kappa_ff_array ();
+
+  sprintf (filename, "%.100s.opacity_check.txt", rootname);
+  fptr = fopen (filename, "w");
+  fprintf (fptr, "# kappa_ff before vs after pop_kappa_ff_array(), at nu = %.4e Hz.\n", nu_probe);
+  fprintf (fptr, "# kappa_ff_factor is a plain member of the plasma structure and so should be\n");
+  fprintf (fptr, "# restored with the windsave.  If that is true these two columns agree and\n");
+  fprintf (fptr, "# the check passes.  If the restored factor had been stale or zero they\n");
+  fprintf (fptr, "# would differ, and every free-free value in the table would be suspect.\n");
+  /* commented so the whole file loads with a plain comments="#" reader */
+  fprintf (fptr, "#%5s %17s %17s %14s\n", "cell", "ff_restored", "ff_recomputed", "rel_diff");
+
+  for (i = 0; i < ndim2; i++)
+  {
+    if (ff_pre[i] < 0.0)
+      continue;
+    ff_before = ff_pre[i];
+    ff_after = kappa_ff (&plasmamain[wmain[nstart + i].nplasma], nu_probe);
+    if (ff_before > 0.0)
+    {
+      rel = fabs (ff_after - ff_before) / ff_before;
+    }
+    else
+    {
+      rel = (ff_after == 0.0) ? 0.0 : 1.0;
+    }
+    if (rel > worst)
+    {
+      worst = rel;
+      worst_cell = i;
+    }
+    fprintf (fptr, "%6d %17.9e %17.9e %14.5e\n", i, ff_before, ff_after, rel);
+  }
+  fprintf (fptr, "# worst relative difference %.5e at cell %d -- %s\n", worst, worst_cell,
+           (worst < 1.0e-12) ? "PASS: the restored factor was already correct"
+           : "FAIL: the restored kappa_ff_factor was NOT usable, see the note above");
+  fclose (fptr);
+  free (ff_pre);
+
+  Log ("create_opacity_table: kappa_ff restore check, worst rel diff %.3e at cell %d\n", worst, worst_cell);
+
+  /* The table */
+
+  sprintf (filename, "%.100s.opacity.txt", rootname);
+  fptr = fopen (filename, "w");
+  fprintf (fptr, "%10s %5s %7s %12s %12s %9s", "r", "i", "inwind", "ne", "rho", "kbf_nuse");
+  for (j = 0; j < OPAC_NFREQ; j++)
+    fprintf (fptr, " %13s%04d", "bf_", j);
+  for (j = 0; j < OPAC_NFREQ; j++)
+    fprintf (fptr, " %13s%04d", "ff_", j);
+  for (j = 0; j < OPAC_NFREQ; j++)
+    fprintf (fptr, " %13s%04d", "es_", j);
+  fprintf (fptr, "\n");
+
+  for (i = 0; i < ndim2; i++)
+  {
+    n = nstart + i;
+    fprintf (fptr, "%10.4e %5d %7d", wmain[n].r, i, wmain[n].inwind);
+
+    if (wmain[n].inwind >= 0 || xedge)
+    {
+      nplasma = wmain[n].nplasma;
+      xp = &plasmamain[nplasma];
+      fprintf (fptr, " %12.5e %12.5e %9d", xp->ne, xp->rho, xp->kbf_nuse);
+      for (j = 0; j < OPAC_NFREQ; j++)
+      {
+        kbf = kappa_bf (xp, nu[j], 0);
+        fprintf (fptr, " %17.9e", kbf);
+      }
+      for (j = 0; j < OPAC_NFREQ; j++)
+      {
+        kff = kappa_ff (xp, nu[j]);
+        fprintf (fptr, " %17.9e", kff);
+      }
+      for (j = 0; j < OPAC_NFREQ; j++)
+      {
+        kes = klein_nishina (nu[j]) * xp->ne * zdom[ndom].fill;
+        fprintf (fptr, " %17.9e", kes);
+      }
+    }
+    else
+    {
+      fprintf (fptr, " %12.5e %12.5e %9d", 0.0, 0.0, 0);
+      for (j = 0; j < 3 * OPAC_NFREQ; j++)
+        fprintf (fptr, " %17.9e", 0.0);
+    }
+    fprintf (fptr, "\n");
+  }
+  fclose (fptr);
+  free (nu);
+
+  Log ("create_opacity_table: wrote %d frequencies x %d cells to %s\n", OPAC_NFREQ, ndim2, filename);
 
   return (0);
 }
