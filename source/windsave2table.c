@@ -101,7 +101,7 @@ char windsave2table_help[] = "Usage: windsave2table [-r or -s] [-a] [-x wincell_
 -a             Print additional tables with more information about ions  \n\
 -edge          Include edge cells in the various tables  \n\
 -lev           Also write the fractional level populations (the levden array) and their metadata \n\
--opac          Also write the frequency-resolved CONTINUUM opacity (bf, ff, es) per cell \n\
+-opac          Also write the frequency-resolved CONTINUUM opacity (bf, ff, es) and the binned LINE opacity per cell \n\
 --version      Return version info and quit \n\
 -x windcell    In addition to the normal tables, print out the detailed spectra in a specific windcell\n\
 -xall          In addition to the normal tables, print out a large file containing all of the detailed cell spectra\n\

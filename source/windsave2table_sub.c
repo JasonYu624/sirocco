@@ -89,6 +89,7 @@ do_windsave2table (root, ion_switch, edge_switch, lev_switch, opac_switch)
     if (opac_switch)
     {
       create_opacity_table (ndom, rootname);
+      create_line_opacity_table (ndom, rootname);
     }
 
     if (ion_switch != 99)
@@ -1740,6 +1741,174 @@ create_opacity_table (ndom, rootname)
   free (nu);
 
   Log ("create_opacity_table: wrote %d frequencies x %d cells to %s\n", OPAC_NFREQ, ndim2, filename);
+
+  return (0);
+}
+
+
+/**********************************************************/
+/**
+ * @brief      makes an astropy table of the frequency-binned LINE absorption
+ *   coefficient in every wind cell, from sirocco's own level populations
+ *
+ * @param [in] int  ndom   The domain number
+ * @param [in] char  rootname[]   The rootname of the windsave file
+ * @return     0 on completion
+ *
+ * @details
+ *
+ * Writes rootname.lineopac.txt: one row per cell, and one column per bin of
+ * the same 700-point logarithmic frequency grid the -opac table uses, holding
+ *
+ *     sum over lines in the bin of   (pi e^2 / m_e c) * n_l^eff * f_lu
+ *
+ * which is the FREQUENCY-INTEGRATED line absorption coefficient in that bin,
+ * units cm^-1 Hz.  Divide by rho for a mass opacity, by the bin width for a
+ * mean kappa_nu across the bin, or Planck-weight the bins to compare against a
+ * group-mean table.
+ *
+ * n_l^eff = d1 - (gl/gu) d2 is the stimulated-emission-corrected lower level
+ * density, exactly as sobolev() forms it in resonate.c.  The populations come
+ * from the same two routes sobolev uses and are not recomputed here:
+ *
+ *   macro lines   den_config(), i.e. the macro-atom levden populations
+ *   simple lines  two_level_atom(), which builds the lower level from
+ *                 line_ptr->el, the cell's dilution w and t_r
+ *
+ * ### Notes ###
+ *
+ * ⚠️ THIS IS THE QUANTITY, NOT A SOBOLEV OPTICAL DEPTH.  sobolev() divides by
+ * dvds to get a depth; that extra factor is geometry and velocity field, not
+ * opacity, and it would make the table incomparable with a tabulated kappa.
+ * The integrated coefficient is written instead and any depth is formed
+ * downstream from it and the run's own dvds.
+ *
+ * ⚠️ WHAT THIS DOES AND DOES NOT MEASURE ABOUT NLTE.  For macro species (H, He
+ * here) the lower level is a real non-LTE population.  For every other element
+ * it is two_level_atom's on-the-spot dilute-Boltzmann estimate, and sirocco's
+ * own source flags that treatment as unresolved at lines.c:310 ("I don't
+ * believe what one should do with metastable lower levels is worked out, either
+ * in the program... or conceptually").  A comparison against an LTE table
+ * therefore measures the difference between an LTE population and THAT
+ * estimate, which is a real and quotable difference but is not a statement
+ * that sirocco's metal line populations are correct.
+ *
+ * ⚠️ Under the matrix_pow / matrix_est ionization modes the partition functions
+ * entering two_level_atom are ground-state-only, because
+ * partition_functions(NEBULARMODE_LTE_GROUND) sets weight = 0.  That biases
+ * every simple-ion line here in a way that is not separated out.
+ *
+ **********************************************************/
+
+int
+create_line_opacity_table (ndom, rootname)
+     int ndom;
+     char rootname[];
+{
+  char filename[132];
+  int nstart, ndim2;
+  int i, j, n, nplasma;
+  double *nu, *bin;
+  double lf0, lf1, dlf;
+  double d1, d2, xden, contrib;
+  long nskip_neg, nused;
+  PlasmaPtr xp;
+  FILE *fptr;
+
+  nstart = zdom[ndom].nstart;
+  ndim2 = zdom[ndom].ndim2;
+
+  nu = (double *) calloc (sizeof (double), OPAC_NFREQ);
+  bin = (double *) calloc (sizeof (double), OPAC_NFREQ);
+  if (nu == NULL || bin == NULL)
+  {
+    Error ("create_line_opacity_table: allocation failed\n");
+    return (0);
+  }
+  lf0 = log10 (OPAC_FMIN);
+  lf1 = log10 (OPAC_FMAX);
+  dlf = (lf1 - lf0) / (OPAC_NFREQ - 1);
+  for (j = 0; j < OPAC_NFREQ; j++)
+    nu[j] = pow (10.0, lf0 + j * dlf);
+
+  sprintf (filename, "%.100s.lineopac.txt", rootname);
+  fptr = fopen (filename, "w");
+  fprintf (fptr, "%10s %5s %7s %12s %10s", "r", "i", "inwind", "rho", "nline");
+  for (j = 0; j < OPAC_NFREQ; j++)
+    fprintf (fptr, " %13s%04d", "lint_", j);
+  fprintf (fptr, "\n");
+
+  nskip_neg = 0;
+
+  for (i = 0; i < ndim2; i++)
+  {
+    n = nstart + i;
+    fprintf (fptr, "%10.4e %5d %7d", wmain[n].r, i, wmain[n].inwind);
+
+    for (j = 0; j < OPAC_NFREQ; j++)
+      bin[j] = 0.0;
+    nused = 0;
+
+    if (wmain[n].inwind >= 0 || xedge)
+    {
+      nplasma = wmain[n].nplasma;
+      xp = &plasmamain[nplasma];
+
+      for (j = 0; j < nlines; j++)
+      {
+        if (line[j].freq < OPAC_FMIN || line[j].freq >= OPAC_FMAX)
+          continue;
+
+        /* The same branch sobolev() takes, so the populations are the ones the
+           transfer used rather than a second opinion. */
+        if (line[j].macro_info == TRUE && geo.rt_mode == RT_MODE_MACRO && geo.macro_simple == FALSE)
+        {
+          d1 = den_config (xp, line[j].nconfigl);
+          d2 = den_config (xp, line[j].nconfigu);
+        }
+        else
+        {
+          two_level_atom (&line[j], xp, &d1, &d2);
+        }
+
+        xden = d1 - line[j].gl / line[j].gu * d2;
+        if (xden <= 0.0)
+        {
+          /* a population inversion, or numerically zero; sobolev() treats this
+             as no opacity, and so does this.  Counted, not hidden. */
+          nskip_neg++;
+          continue;
+        }
+
+        contrib = PI_E2_OVER_MC * xden * line[j].f;
+        {
+          int k = (int) ((log10 (line[j].freq) - lf0) / dlf + 0.5);
+          if (k < 0)
+            k = 0;
+          if (k >= OPAC_NFREQ)
+            k = OPAC_NFREQ - 1;
+          bin[k] += contrib;
+        }
+        nused++;
+      }
+      fprintf (fptr, " %12.5e %10ld", xp->rho, nused);
+    }
+    else
+    {
+      fprintf (fptr, " %12.5e %10d", 0.0, 0);
+    }
+
+    for (j = 0; j < OPAC_NFREQ; j++)
+      fprintf (fptr, " %17.9e", bin[j]);
+    fprintf (fptr, "\n");
+  }
+
+  fclose (fptr);
+  free (nu);
+  free (bin);
+
+  Log ("create_line_opacity_table: %d lines over %d cells; %ld line-cell pairs skipped for xden <= 0\n",
+       nlines, ndim2, nskip_neg);
 
   return (0);
 }
