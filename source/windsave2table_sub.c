@@ -49,10 +49,11 @@ int xedge = FALSE;
  **********************************************************/
 
 int
-do_windsave2table (root, ion_switch, edge_switch)
+do_windsave2table (root, ion_switch, edge_switch, lev_switch)
      char *root;
      int ion_switch;
      int edge_switch;
+     int lev_switch;
 {
   int ndom, i;
   char rootname[LINELENGTH];
@@ -78,6 +79,11 @@ do_windsave2table (root, ion_switch, edge_switch)
     create_convergence_table (ndom, rootname);
     create_velocity_gradient_table (ndom, rootname);
     create_spec_table (ndom, rootname);
+
+    if (lev_switch)
+    {
+      create_levden_table (ndom, rootname);
+    }
 
     if (ion_switch != 99)
     {
@@ -1300,6 +1306,203 @@ get_ion (ndom, element, istate, iswitch, name)
   return (x);
 }
 
+
+
+/**********************************************************/
+/**
+ * @brief      makes an astropy table of the fractional level populations,
+ *   that is of the levden array, for every level that is tracked
+ *
+ * @param [in] int  ndom   The domain number
+ * @param [in] char  rootname[]   The rootname of the windsave file
+ * @return     0 on completion
+ *
+ * @details
+ *
+ * Two files are written:
+ *
+ *   rootname.levden.txt       one row per wind cell, one column per element
+ *                             of the levden array
+ *   rootname.levden_meta.txt  one row per element of the levden array, which
+ *                             identifies the level and gives g and the
+ *                             excitation energy, so that an LTE reference
+ *                             population can be built from this table alone
+ *
+ * levden holds the FRACTIONAL population of a level within its ion, so that
+ * the number density of a level is levden[nden]*density[nion], as in
+ * radiation.c.
+ *
+ * ### Notes ###
+ *
+ * The whole array is written and no species is selected here, so that the
+ * choice of which ion to look at is made when the table is read.
+ *
+ * Three different things appear as small numbers in this table and they
+ * must not be confused with one another:
+ *
+ *   exactly 0.0    the entry was never written.  levden is calloc'd in
+ *                  gridwind.c, so this is either a cell that was not solved,
+ *                  or a level of an ion whose excited states were forced
+ *                  into the ground state.  The latter is what the matrix_pow
+ *                  and matrix_est ionization modes do to every non-macro
+ *                  ion, through partition_functions(NEBULARMODE_LTE_GROUND),
+ *                  which calls levels() with weight = 0.
+ *   exactly 1e-20  DENSITY_MIN, the floor applied in
+ *                  macro_pops_copy_to_xplasma
+ *   anything else  an actual population
+ *
+ * Cells that are not in the wind are written as zero, as they are in the
+ * other tables here, so the inwind column is what distinguishes those from
+ * a level that was never populated.
+ *
+ * xconfig[].ex is measured from the ground state of the NEUTRAL atom, so the
+ * excitation energy that belongs in a Boltzmann factor for an ion is
+ * ex - ex(ground state of that ion).  Both are written out, because getting
+ * that offset wrong is silent.
+ *
+ **********************************************************/
+
+int
+create_levden_table (ndom, rootname)
+     int ndom;
+     char rootname[];
+{
+  char filename[132];
+  char colname[LINELENGTH];
+  int nstart, ndim2;
+  int i, ii, jj, m, n, nplasma, nion, k;
+  int *cfg;
+  double ex0;
+  FILE *fptr;
+
+  nstart = zdom[ndom].nstart;
+  ndim2 = zdom[ndom].ndim2;
+
+  /* Map each levden slot back to the configuration that owns it.  Slots that
+     no configuration claims stay at -1 and are written out as unused. */
+
+  cfg = (int *) calloc (sizeof (int), nlte_levels);
+  if (cfg == NULL)
+  {
+    Error ("create_levden_table: could not allocate cfg for %d levels\n", nlte_levels);
+    return (0);
+  }
+  for (n = 0; n < nlte_levels; n++)
+  {
+    cfg[n] = -1;
+  }
+  for (m = 0; m < nlevels; m++)
+  {
+    if (xconfig[m].nden >= 0 && xconfig[m].nden < nlte_levels)
+    {
+      cfg[xconfig[m].nden] = m;
+    }
+  }
+
+  /* The metadata file, one row per levden slot */
+
+  sprintf (filename, "%.100s.levden_meta.txt", rootname);
+  fptr = fopen (filename, "w");
+  fprintf (fptr, "%6s %6s %4s %6s %8s %12s %8s %12s %12s %8s %6s %6s %6s\n",
+           "col", "nden", "z", "istate", "element", "colname", "g", "ex_ion_eV", "ex_atom_eV", "qnum", "isp", "ilv", "macro");
+
+  for (n = 0; n < nlte_levels; n++)
+  {
+    m = cfg[n];
+    if (m < 0)
+    {
+      sprintf (colname, "unused_%04d", n);
+      fprintf (fptr, "%6d %6d %4d %6d %8s %12s %8.1f %12.5e %12.5e %8.2f %6d %6d %6d\n",
+               n, n, -1, -1, "none", colname, 0.0, 0.0, 0.0, 0.0, -1, -1, -1);
+      continue;
+    }
+
+    nion = xconfig[m].nion;
+    k = n - ion[nion].first_levden;
+    ex0 = xconfig[ion[nion].first_nlte_level].ex;
+    sprintf (colname, "%.4s%d_%02d", ele[ion[nion].nelem].name, xconfig[m].istate, k);
+
+    fprintf (fptr, "%6d %6d %4d %6d %8s %12s %8.1f %12.5e %12.5e %8.2f %6d %6d %6d\n",
+             n, n, xconfig[m].z, xconfig[m].istate, ele[ion[nion].nelem].name, colname,
+             xconfig[m].g, (xconfig[m].ex - ex0) / EV2ERGS, xconfig[m].ex / EV2ERGS,
+             xconfig[m].q_num, xconfig[m].isp, xconfig[m].ilv, xconfig[m].macro_info);
+  }
+  fclose (fptr);
+
+  /* The table itself.  Values are written one at a time rather than
+     assembled into a line, because there is no bound on the number of
+     tracked levels. */
+
+  sprintf (filename, "%.100s.levden.txt", rootname);
+  fptr = fopen (filename, "w");
+
+  if (zdom[ndom].coord_type == SPHERICAL)
+  {
+    fprintf (fptr, "%8s %4s %6s %9s %9s %9s", "r", "i", "inwind", "t_e", "t_r", "w");
+  }
+  else
+  {
+    fprintf (fptr, "%8s %8s %4s %4s %6s %9s %9s %9s", "x", "z", "i", "j", "inwind", "t_e", "t_r", "w");
+  }
+
+  for (n = 0; n < nlte_levels; n++)
+  {
+    m = cfg[n];
+    if (m < 0)
+    {
+      sprintf (colname, "unused_%04d", n);
+    }
+    else
+    {
+      nion = xconfig[m].nion;
+      k = n - ion[nion].first_levden;
+      sprintf (colname, "%.4s%d_%02d", ele[ion[nion].nelem].name, xconfig[m].istate, k);
+    }
+    fprintf (fptr, " %15s", colname);
+  }
+  fprintf (fptr, "\n");
+
+  for (i = 0; i < ndim2; i++)
+  {
+    nplasma = wmain[nstart + i].nplasma;
+
+    if (zdom[ndom].coord_type == SPHERICAL)
+    {
+      fprintf (fptr, "%8.2e %4d %6d", wmain[nstart + i].r, i, wmain[nstart + i].inwind);
+    }
+    else
+    {
+      wind_n_to_ij (ndom, nstart + i, &ii, &jj);
+      fprintf (fptr, "%8.2e %8.2e %4d %4d %6d", wmain[nstart + i].xcen[0], wmain[nstart + i].xcen[2], ii, jj,
+               wmain[nstart + i].inwind);
+    }
+
+    if (wmain[nstart + i].inwind >= 0 || xedge)
+    {
+      fprintf (fptr, " %9.3e %9.3e %9.3e", plasmamain[nplasma].t_e, plasmamain[nplasma].t_r, plasmamain[nplasma].w);
+      for (n = 0; n < nlte_levels; n++)
+      {
+        fprintf (fptr, " %15.8e", plasmamain[nplasma].levden[n]);
+      }
+    }
+    else
+    {
+      fprintf (fptr, " %9.3e %9.3e %9.3e", 0.0, 0.0, 0.0);
+      for (n = 0; n < nlte_levels; n++)
+      {
+        fprintf (fptr, " %15.8e", 0.0);
+      }
+    }
+    fprintf (fptr, "\n");
+  }
+
+  fclose (fptr);
+  free (cfg);
+
+  Log ("create_levden_table: wrote %d levels for %d cells to %s\n", nlte_levels, ndim2, filename);
+
+  return (0);
+}
 
 
 /**********************************************************/
