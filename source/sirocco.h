@@ -144,7 +144,20 @@ extern int NWAVE_NOW;         /**< Either NWAVE_IONIZ or NWAVE_EXTRACT depending
                                 */
 #define NWAVE_MIN   100       /**< The minimum number of wavelength bins in during spectral cycles
                                */
+/* LQ project, 2026-08-23: guarded so the cap can be overridden at build time
+   (-DMAXSCAT=...) without editing this file.  The default is unchanged, so a
+   plain build is bit-identical to upstream.  Needed because both R1 depth arms
+   hit the cap -- max scatters seen 19893 (tau_es=10) and 19986 (tau_es=30) --
+   so "does the cap bias the answer" became a question that has to be measured
+   rather than assumed.
+   Restored 2026-09-12: this branch had lost the guard, which would have made a
+   -DMAXSCAT=200000 build silently fall back to 20000 (the header's bare define
+   comes after the command line one).  MDOTW8 itself is nowhere near the cap --
+   max scatters 930-1149 across all eight arms, and 20/20 cycles report exactly
+   zero luminosity lost to it -- so no result on disk is affected. */
+#ifndef MAXSCAT
 #define MAXSCAT    20000
+#endif
 
 /* Define the structures */
 #include "math_struc.h"
