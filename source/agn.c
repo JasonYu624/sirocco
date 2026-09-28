@@ -28,7 +28,9 @@
  * @brief      Calculates the total luminosity of an AGN type source
  *
  * @param [in] double  r   radius of emitting object
- * @param [in] double  lum   the luminosity of the AGN (2-10keV) - used in the continuum model case 
+ * @param [in] double  lum   the luminosity of the AGN - used in the continuum model case.  LQ: by
+ *                           default the model SED's TOTAL over its own band; its 2-10keV luminosity
+ *                           only with --agn-norm-2-10kev (the upstream convention).
  * @param [in] double  alpha   the spectral index of the PL source - also sometimes used for a temperature if a BB source is required
  * @param [in] double  freqmin   minimum frequency to integrate over
  * @param [in] double  freqmax   maximum frequency
@@ -59,11 +61,12 @@ agn_init (r, lum, alpha, freqmin, freqmax, ioniz_or_extract, f)
 {
 
   double t;
-  double scaling;               //The scaling factor to get from a model to get the correct 2-10keV luminosity
-  double emit, emit_2_10;
-  double mod_fmin, mod_fmax;    //LQ: the model's own band, used when 2-10keV is empty
+  double scaling;               //The scaling factor from the model's emittance to the required luminosity
+  double emit, emit_2_10, emit_norm;
+  double mod_fmin, mod_fmax;    //LQ: the model's own band
   int nwav;
   int spectype;
+  static int norm_logged = FALSE;       //LQ: state the normalisation once per run, not once per band
 
   if (ioniz_or_extract == CYCLE_EXTRACT)
     spectype = geo.agn_spectype;        /* type for final spectrum */
@@ -73,44 +76,66 @@ agn_init (r, lum, alpha, freqmin, freqmax, ioniz_or_extract, f)
   {
     /* This calls models - we *should* have only one model in this case, so we call the emittance
        continuum with dummy variables instead of T and g (the trailing 0.0s). */
-    /* First we compute the emittance from 2-10keV to compare with the required 2-10keV luminosity */
+    /* ⚠️ This 2-10keV call must stay FIRST and unconditional: it is what populates
+       comp[spectype].xmod, whose w[] the model-band limits below are read from.  In
+       the default path its value is only reported, never used to normalise. */
     emit_2_10 = emittance_continuum (spectype, 4.84e17, 2.42e18, 0.0, 0.0);
-    if (emit_2_10 <= 0.0)
+
+    if (modes.agn_norm_2_10kev)
     {
-      /* LQ project, 2026-08-19: normalise on the model's own band rather than
-         aborting.
+      /* The upstream AGN convention, on request (--agn-norm-2-10kev):
+         Central_object.luminosity is the model's 2-10keV luminosity. */
+      if (emit_2_10 <= 0.0)
+      {
+        Error ("agn_init: --agn-norm-2-10kev was given but the model SED has no power in 2-10keV - cannot continue\n");
+        exit (0);
+      }
+      emit_norm = emit_2_10;
+      if (!norm_logged)
+      {
+        Log ("agn_init: normalising the model SED on 2-10keV (--agn-norm-2-10kev); Central_object.luminosity is L(2-10keV)\n");
+        norm_logged = TRUE;
+      }
+    }
+    else
+    {
+      /* LQ project, 2026-09-28: ALWAYS normalise on the model's own band, so that
+         Central_object.luminosity is the source's TOTAL luminosity whatever range
+         the SED spans.
 
-         The 2-10keV anchor is an AGN convention -- an AGN has an X-ray corona
-         and its 2-10keV luminosity is THE standard normalisation.  A cool
-         source has no power there by construction, so for such a model this
-         test is a category error rather than a sanity check.  For the TDE wind
-         this was added for, the Planck fraction above 2keV is 1.1e-16 at the
-         hottest point in the flow and 4.8e-48 at the handoff radius; a tabulated
-         SED that does show something there is showing a numerical floor, not
-         emission, and normalising on it makes the entire SED hostage to that
-         floor (it did: a 1.5% overshoot that took a day to trace).
+         History.  Upstream normalises every `models` source on 2-10keV, the AGN
+         convention.  On 2026-08-19 this was relaxed to fall back to the model's
+         own band only when the SED had NO power in 2-10keV -- which was every
+         point it was written for (the TDE wind's Planck fraction above 2keV is
+         1.1e-16 at its hottest), so every LQ run took the fallback and read the
+         key as the total.  The late-time LFBOT point broke that silently: at
+         T_b = 2.48e6 K about 1.5% of the Planck lies in 2-10keV, the fallback no
+         longer fired, and the key was read as L(2-10keV) -- the photons carried
+         64.6x the intended luminosity ("Total photon luminosity before transphot"
+         1.398e43 against lum_tot 2.16e41).  Nothing warned: the branch that
+         fires is the one that looks like correct behaviour.
 
-         Models that DO have 2-10keV power never reach this branch, so AGN
-         setups are bit-for-bit unaffected; only the case that used to exit(0)
-         behaves differently.  For those models Central_object.luminosity is
-         read as the luminosity in the model's own band, which the message below
-         states explicitly.
-
-         xmod is already populated by the call above, so w[] is valid here. */
+         So the band is no longer chosen by whether 2-10keV happens to be empty.
+         Every run that took the 2026-08-19 fallback makes EXACTLY these
+         emittance_continuum calls, in this order, with these arguments, and so
+         is bit-for-bit unchanged; the upstream convention is one flag away. */
       nwav = comp[spectype].nwaves;
       mod_fmax = VLIGHT / (comp[spectype].xmod.w[0] * ANGSTROM) * (1. - 1.e-10);
       mod_fmin = VLIGHT / (comp[spectype].xmod.w[nwav - 1] * ANGSTROM) * (1. + 1.e-10);
-      emit_2_10 = emittance_continuum (spectype, mod_fmin, mod_fmax, 0.0, 0.0);
-      Error
-        ("agn_init: model SED has no power in 2-10keV; normalising on the model's own band %.4e-%.4e Hz (%.4g-%.4g eV) instead. Central_object.luminosity is read as L in THAT band.\n",
-         mod_fmin, mod_fmax, HEV * mod_fmin, HEV * mod_fmax);
-      if (emit_2_10 <= 0.0)
+      emit_norm = emittance_continuum (spectype, mod_fmin, mod_fmax, 0.0, 0.0);
+      if (emit_norm <= 0.0)
       {
         Error ("agn_init: Supplied model SED has no power anywhere - cannot continue\n");
         exit (0);
       }
+      if (!norm_logged)
+      {
+        Log ("agn_init: normalising the model SED on its own band %.4e-%.4e Hz (%.4g-%.4g eV); Central_object.luminosity is the TOTAL. 2-10keV carries %.4e of it (upstream would have read the key as that band).\n",
+             mod_fmin, mod_fmax, HEV * mod_fmin, HEV * mod_fmax, emit_2_10 / emit_norm);
+        norm_logged = TRUE;
+      }
     }
-    scaling = lum / emit_2_10;  //This gives us a scaling factor which can be applied to whatever band we are dealing with
+    scaling = lum / emit_norm;  //This gives us a scaling factor which can be applied to whatever band we are dealing with
 
 
     emit = emittance_continuum (spectype, freqmin, freqmax, 0.0, 0.0);  //Compute emittance (luminosity) for the actual band

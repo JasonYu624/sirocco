@@ -221,6 +221,12 @@ parse_command_line (argc, argv)
         j = i;
         Log ("Using a random seed in random number generator\n");
       }
+      else if (strcmp (argv[i], "--agn-norm-2-10kev") == 0)
+      {
+        modes.agn_norm_2_10kev = 1;
+        j = i;
+        Log ("A `models` central source is normalised on 2-10keV (upstream AGN convention)\n");
+      }
       else if (strcmp (argv[i], "--rng") == 0)
       {
         modes.save_rng = 1;
@@ -392,6 +398,8 @@ and the switches have the following meanings \n\
  --version              Print out sirocco version, commit hash and if there were files with uncommitted \n\
                         changes and stop \n\
  --rseed                Set the random number seed to be time-based, rather than fixed. \n\
+ --agn-norm-2-10kev     Read Central_object.luminosity of a `models` source as its 2-10keV luminosity \n\
+                        (upstream AGN convention).  Default: the model SED's total over its own band.\n\
  --rng                  Save or load the RNG state to file, to allow persistent RNG states between restarts\n\
 \n\
 Other switches exist but these are not intended for the general user.\n\
