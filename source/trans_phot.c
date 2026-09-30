@@ -214,6 +214,20 @@ trans_phot_single (WindPtr w, PhotPtr p, int iextract)
   double normal[3];
   double rho, dz;
 
+  /* LQ packet-gain diagnostic (branch lq-packet-gain-diag).  Active only when the
+     environment variable LQ_PGAIN_DIAG is set; otherwise nothing below changes.
+     Logs every translate() or scatter() step that raises the packet's lab-frame
+     weight by more than PGAIN_STEP, and every escaping packet whose weight exceeds
+     PGAIN_STEP x its launch weight, capped at PGAIN_MAXLINES lines per rank. */
+#define PGAIN_STEP 1.05
+#define PGAIN_MAXLINES 200000
+  static int pgain_on = -1;
+  static long pgain_lines = 0;
+  double pg_w, pg_f;
+  int pg_grid, pg_nres;
+  if (pgain_on < 0)
+    pgain_on = (getenv ("LQ_PGAIN_DIAG") != NULL);
+
 
   /* Initialize parameters that are needed for the flight of the photon through the wind */
 
@@ -236,7 +250,16 @@ trans_phot_single (WindPtr w, PhotPtr p, int iextract)
        photon at the position of it's last scatter.  In most other cases though we store the final 
        position of the photon. */
 
+    pg_w = pp.w;
+    pg_f = pp.freq;
+    pg_grid = pp.grid;
     istat = translate (w, &pp, tau_scat, &tau, &current_nres);
+    if (pgain_on && pp.w > PGAIN_STEP * pg_w && pgain_lines < PGAIN_MAXLINES)
+    {
+      pgain_lines++;
+      Log ("PGAIN translate np %d cyc %d nscat %d grid %d->%d istat %d nres %d w %.6e->%.6e x%.6g f %.6e->%.6e w/w_orig %.6g\n",
+           pp.np, geo.wcycle, pp.nscat, pg_grid, pp.grid, istat, current_nres, pg_w, pp.w, pp.w / pg_w, pg_f, pp.freq, pp.w / pp.w_orig);
+    }
 
     if (istat == P_ERROR)
     {
@@ -434,9 +457,19 @@ trans_phot_single (WindPtr w, PhotPtr p, int iextract)
         stuff_phot (&pp, &pextract);
       }
 
+      pg_w = pp.w;
+      pg_f = pp.freq;
+      pg_nres = current_nres;
       if ((ierr = scatter (&pp, &current_nres, &nnscat)))       // pp is modified
       {
         Error ("trans_phot_single: photon %d returned error code %d whilst scattering \n", pp.np, ierr);
+      }
+      if (pgain_on && pp.w > PGAIN_STEP * pg_w && pgain_lines < PGAIN_MAXLINES)
+      {
+        pgain_lines++;
+        Log ("PGAIN scatter np %d cyc %d nscat %d grid %d nres %d->%d istat %d w %.6e->%.6e x%.6g f %.6e->%.6e w/w_orig %.6g\n",
+             pp.np, geo.wcycle, pp.nscat, pp.grid, pg_nres, current_nres, pp.istat, pg_w, pp.w, pp.w / pg_w, pg_f, pp.freq,
+             pp.w / pp.w_orig);
       }
 
       if (geo.matom_radiation == 1 && geo.rt_mode == RT_MODE_MACRO && pp.w < weight_min)
@@ -552,6 +585,13 @@ trans_phot_single (WindPtr w, PhotPtr p, int iextract)
   /* This is set up for looking at photons in spectral cycles at present */
   // if (modes.save_photons && geo.ioniz_or_extract == CYCLE_EXTRACT)
   //   save_photons (&pp, "End");
+
+  if (pgain_on && p->istat == P_ESCAPE && p->w > PGAIN_STEP * p->w_orig && pgain_lines < PGAIN_MAXLINES)
+  {
+    pgain_lines++;
+    Log ("PGAIN escape np %d cyc %d nscat %d nrscat %d w_orig %.6e w %.6e w/w_orig %.6g f %.6e\n",
+         p->np, geo.wcycle, p->nscat, p->nrscat, p->w_orig, p->w, p->w / p->w_orig, p->freq);
+  }
 
   return (0);
 }
