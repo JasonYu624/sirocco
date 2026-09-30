@@ -81,6 +81,31 @@ long n_lost_to_dfudge = 0;
  *
  **********************************************************/
 
+/* LQ packet-gain diagnostic (branch lq-packet-gain-diag).  LQ_PGAIN_DIAG unset: off, transport unchanged.
+   =2: log every escaping packet with w > PGAIN_STEP w_orig (its launch, minimum and escape frequency, the weight
+       at the minimum and the interaction that set it), and a per-rank, per-cycle summary splitting the escaping
+       energy into those gainers and the rest.
+   =1: all of =2, plus every translate()/scatter() step that raises the lab-frame weight by > PGAIN_STEP.
+   At most PGAIN_MAXLINES lines per rank. */
+#define PGAIN_STEP 1.05
+#define PGAIN_MAXLINES 200000
+static long pgain_lines = 0;
+static long pgain_esc_n = 0, pgain_gain_n = 0;
+static double pgain_esc_w = 0, pgain_esc_worig = 0, pgain_gain_w = 0, pgain_gain_worig = 0;
+
+static int
+pgain_level (void)
+{
+  static int level = -1;
+  char *s;
+  if (level < 0)
+  {
+    s = getenv ("LQ_PGAIN_DIAG");
+    level = (s == NULL) ? 0 : (atoi (s) == 2 ? 2 : 1);
+  }
+  return level;
+}
+
 int
 trans_phot (WindPtr w, PhotPtr p, int iextract)
 {
@@ -129,6 +154,14 @@ trans_phot (WindPtr w, PhotPtr p, int iextract)
     }
 
     trans_phot_single (w, &p[nphot], iextract);
+  }
+
+  if (pgain_level () > 0)
+  {
+    Log ("PGAIN summary cyc %d nphot %d esc_n %ld esc_w %.6e esc_w_orig %.6e gain_n %ld gain_w %.6e gain_w_orig %.6e\n",
+         geo.wcycle, NPHOT, pgain_esc_n, pgain_esc_w, pgain_esc_worig, pgain_gain_n, pgain_gain_w, pgain_gain_worig);
+    pgain_esc_n = pgain_gain_n = 0;
+    pgain_esc_w = pgain_esc_worig = pgain_gain_w = pgain_gain_worig = 0.0;
   }
 
   Log ("\n");
@@ -214,24 +247,18 @@ trans_phot_single (WindPtr w, PhotPtr p, int iextract)
   double normal[3];
   double rho, dz;
 
-  /* LQ packet-gain diagnostic (branch lq-packet-gain-diag).  Active only when the
-     environment variable LQ_PGAIN_DIAG is set; otherwise nothing below changes.
-     Logs every translate() or scatter() step that raises the packet's lab-frame
-     weight by more than PGAIN_STEP, and every escaping packet whose weight exceeds
-     PGAIN_STEP x its launch weight, capped at PGAIN_MAXLINES lines per rank. */
-#define PGAIN_STEP 1.05
-#define PGAIN_MAXLINES 200000
-  static int pgain_on = -1;
-  static long pgain_lines = 0;
-  double pg_w, pg_f;
-  int pg_grid, pg_nres;
-  if (pgain_on < 0)
-    pgain_on = (getenv ("LQ_PGAIN_DIAG") != NULL);
+  /* LQ packet-gain diagnostic, see pgain_level() */
+  double pg_w, pg_f, pg_f0, pg_fmin, pg_wmin;
+  int pg_grid, pg_nres, pg_where, pg_nin, pg_nout, pg_nscatmin;
+  int pg_level = pgain_level ();
 
 
   /* Initialize parameters that are needed for the flight of the photon through the wind */
 
   stuff_phot (p, &pp);
+  pg_f0 = pg_fmin = pp.freq;
+  pg_wmin = pp.w;
+  pg_where = pg_nin = pg_nout = pg_nscatmin = 0;
   tau_scat = -log (1. - random_number (0.0, 1.0));
   weight_min = EPSILON * pp.w;
   istat = P_INWIND;
@@ -254,7 +281,15 @@ trans_phot_single (WindPtr w, PhotPtr p, int iextract)
     pg_f = pp.freq;
     pg_grid = pp.grid;
     istat = translate (w, &pp, tau_scat, &tau, &current_nres);
-    if (pgain_on && pp.w > PGAIN_STEP * pg_w && pgain_lines < PGAIN_MAXLINES)
+    if (pg_level > 0 && pp.freq < pg_fmin)
+    {
+      pg_fmin = pp.freq;
+      pg_wmin = pp.w;
+      pg_where = 1;
+      pg_nin = pg_nout = current_nres;
+      pg_nscatmin = pp.nscat;
+    }
+    if (pg_level == 1 && pp.w > PGAIN_STEP * pg_w && pgain_lines < PGAIN_MAXLINES)
     {
       pgain_lines++;
       Log ("PGAIN translate np %d cyc %d nscat %d grid %d->%d istat %d nres %d w %.6e->%.6e x%.6g f %.6e->%.6e w/w_orig %.6g\n",
@@ -464,7 +499,16 @@ trans_phot_single (WindPtr w, PhotPtr p, int iextract)
       {
         Error ("trans_phot_single: photon %d returned error code %d whilst scattering \n", pp.np, ierr);
       }
-      if (pgain_on && pp.w > PGAIN_STEP * pg_w && pgain_lines < PGAIN_MAXLINES)
+      if (pg_level > 0 && pp.freq < pg_fmin)
+      {
+        pg_fmin = pp.freq;
+        pg_wmin = pp.w;
+        pg_where = 2;
+        pg_nin = pg_nres;
+        pg_nout = current_nres;
+        pg_nscatmin = pp.nscat;
+      }
+      if (pg_level == 1 && pp.w > PGAIN_STEP * pg_w && pgain_lines < PGAIN_MAXLINES)
       {
         pgain_lines++;
         Log ("PGAIN scatter np %d cyc %d nscat %d grid %d nres %d->%d istat %d w %.6e->%.6e x%.6g f %.6e->%.6e w/w_orig %.6g\n",
@@ -586,11 +630,25 @@ trans_phot_single (WindPtr w, PhotPtr p, int iextract)
   // if (modes.save_photons && geo.ioniz_or_extract == CYCLE_EXTRACT)
   //   save_photons (&pp, "End");
 
-  if (pgain_on && p->istat == P_ESCAPE && p->w > PGAIN_STEP * p->w_orig && pgain_lines < PGAIN_MAXLINES)
+  if (pg_level > 0 && p->istat == P_ESCAPE)
   {
-    pgain_lines++;
-    Log ("PGAIN escape np %d cyc %d nscat %d nrscat %d w_orig %.6e w %.6e w/w_orig %.6g f %.6e\n",
-         p->np, geo.wcycle, p->nscat, p->nrscat, p->w_orig, p->w, p->w / p->w_orig, p->freq);
+    pgain_esc_n++;
+    pgain_esc_w += p->w;
+    pgain_esc_worig += p->w_orig;
+    if (p->w > PGAIN_STEP * p->w_orig)
+    {
+      pgain_gain_n++;
+      pgain_gain_w += p->w;
+      pgain_gain_worig += p->w_orig;
+      if (pgain_lines < PGAIN_MAXLINES)
+      {
+        pgain_lines++;
+        Log ("PGAIN escape np %d cyc %d nscat %d nrscat %d w_orig %.6e w %.6e w/w_orig %.6g f %.6e f0 %.6e fmin %.6e "
+             "w_at_fmin %.6e fmin_at %d nres_in %d nres_out %d nscat_at_fmin %d\n",
+             p->np, geo.wcycle, p->nscat, p->nrscat, p->w_orig, p->w, p->w / p->w_orig, p->freq, pg_f0, pg_fmin,
+             pg_wmin, pg_where, pg_nin, pg_nout, pg_nscatmin);
+      }
+    }
   }
 
   return (0);
