@@ -98,7 +98,9 @@ xtest ()
 
 
   wind_save (files.windsave);
-  do_windsave2table (files.root, 0, FALSE);
+  /* lev_switch / opac_switch added by the -lev and -opac commits;
+     FALSE for both preserves this path's prior behaviour. */
+  do_windsave2table (files.root, 0, FALSE, FALSE, FALSE);
 
 
 

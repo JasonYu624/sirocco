@@ -49,10 +49,12 @@ int xedge = FALSE;
  **********************************************************/
 
 int
-do_windsave2table (root, ion_switch, edge_switch)
+do_windsave2table (root, ion_switch, edge_switch, lev_switch, opac_switch)
      char *root;
      int ion_switch;
      int edge_switch;
+     int lev_switch;
+     int opac_switch;
 {
   int ndom, i;
   char rootname[LINELENGTH];
@@ -78,6 +80,17 @@ do_windsave2table (root, ion_switch, edge_switch)
     create_convergence_table (ndom, rootname);
     create_velocity_gradient_table (ndom, rootname);
     create_spec_table (ndom, rootname);
+
+    if (lev_switch)
+    {
+      create_levden_table (ndom, rootname);
+    }
+
+    if (opac_switch)
+    {
+      create_opacity_table (ndom, rootname);
+      create_line_opacity_table (ndom, rootname);
+    }
 
     if (ion_switch != 99)
     {
@@ -1329,6 +1342,605 @@ get_ion (ndom, element, istate, iswitch, name)
   return (x);
 }
 
+
+
+/**********************************************************/
+/**
+ * @brief      makes an astropy table of the fractional level populations,
+ *   that is of the levden array, for every level that is tracked
+ *
+ * @param [in] int  ndom   The domain number
+ * @param [in] char  rootname[]   The rootname of the windsave file
+ * @return     0 on completion
+ *
+ * @details
+ *
+ * Two files are written:
+ *
+ *   rootname.levden.txt       one row per wind cell, one column per element
+ *                             of the levden array
+ *   rootname.levden_meta.txt  one row per element of the levden array, which
+ *                             identifies the level and gives g and the
+ *                             excitation energy, so that an LTE reference
+ *                             population can be built from this table alone
+ *
+ * levden holds the FRACTIONAL population of a level within its ion, so that
+ * the number density of a level is levden[nden]*density[nion], as in
+ * radiation.c.
+ *
+ * ### Notes ###
+ *
+ * The whole array is written and no species is selected here, so that the
+ * choice of which ion to look at is made when the table is read.
+ *
+ * Three different things appear as small numbers in this table and they
+ * must not be confused with one another:
+ *
+ *   exactly 0.0    the entry was never written.  levden is calloc'd in
+ *                  gridwind.c, so this is either a cell that was not solved,
+ *                  or a level of an ion whose excited states were forced
+ *                  into the ground state.  The latter is what the matrix_pow
+ *                  and matrix_est ionization modes do to every non-macro
+ *                  ion, through partition_functions(NEBULARMODE_LTE_GROUND),
+ *                  which calls levels() with weight = 0.
+ *   exactly 1e-20  DENSITY_MIN, the floor applied in
+ *                  macro_pops_copy_to_xplasma
+ *   anything else  an actual population
+ *
+ * Cells that are not in the wind are written as zero, as they are in the
+ * other tables here, so the inwind column is what distinguishes those from
+ * a level that was never populated.
+ *
+ * xconfig[].ex is measured from the ground state of the NEUTRAL atom, so the
+ * excitation energy that belongs in a Boltzmann factor for an ion is
+ * ex - ex(ground state of that ion).  Both are written out, because getting
+ * that offset wrong is silent.
+ *
+ **********************************************************/
+
+int
+create_levden_table (ndom, rootname)
+     int ndom;
+     char rootname[];
+{
+  char filename[132];
+  char colname[LINELENGTH];
+  int nstart, ndim2;
+  int i, ii, jj, m, n, nplasma, nion, k;
+  int *cfg;
+  double ex0;
+  FILE *fptr;
+
+  nstart = zdom[ndom].nstart;
+  ndim2 = zdom[ndom].ndim2;
+
+  /* Map each levden slot back to the configuration that owns it.  Slots that
+     no configuration claims stay at -1 and are written out as unused. */
+
+  cfg = (int *) calloc (sizeof (int), nlte_levels);
+  if (cfg == NULL)
+  {
+    Error ("create_levden_table: could not allocate cfg for %d levels\n", nlte_levels);
+    return (0);
+  }
+  for (n = 0; n < nlte_levels; n++)
+  {
+    cfg[n] = -1;
+  }
+  for (m = 0; m < nlevels; m++)
+  {
+    if (xconfig[m].nden >= 0 && xconfig[m].nden < nlte_levels)
+    {
+      cfg[xconfig[m].nden] = m;
+    }
+  }
+
+  /* The metadata file, one row per levden slot */
+
+  sprintf (filename, "%.100s.levden_meta.txt", rootname);
+  fptr = fopen (filename, "w");
+  fprintf (fptr, "%6s %6s %4s %6s %8s %12s %8s %12s %12s %8s %6s %6s %6s\n",
+           "col", "nden", "z", "istate", "element", "colname", "g", "ex_ion_eV", "ex_atom_eV", "qnum", "isp", "ilv", "macro");
+
+  for (n = 0; n < nlte_levels; n++)
+  {
+    m = cfg[n];
+    if (m < 0)
+    {
+      sprintf (colname, "unused_%04d", n);
+      fprintf (fptr, "%6d %6d %4d %6d %8s %12s %8.1f %12.5e %12.5e %8.2f %6d %6d %6d\n",
+               n, n, -1, -1, "none", colname, 0.0, 0.0, 0.0, 0.0, -1, -1, -1);
+      continue;
+    }
+
+    nion = xconfig[m].nion;
+    k = n - ion[nion].first_levden;
+    ex0 = xconfig[ion[nion].first_nlte_level].ex;
+    sprintf (colname, "%.4s%d_%02d", ele[ion[nion].nelem].name, xconfig[m].istate, k);
+
+    fprintf (fptr, "%6d %6d %4d %6d %8s %12s %8.1f %12.5e %12.5e %8.2f %6d %6d %6d\n",
+             n, n, xconfig[m].z, xconfig[m].istate, ele[ion[nion].nelem].name, colname,
+             xconfig[m].g, (xconfig[m].ex - ex0) / EV2ERGS, xconfig[m].ex / EV2ERGS,
+             xconfig[m].q_num, xconfig[m].isp, xconfig[m].ilv, xconfig[m].macro_info);
+  }
+  fclose (fptr);
+
+  /* The table itself.  Values are written one at a time rather than
+     assembled into a line, because there is no bound on the number of
+     tracked levels. */
+
+  sprintf (filename, "%.100s.levden.txt", rootname);
+  fptr = fopen (filename, "w");
+
+  if (zdom[ndom].coord_type == SPHERICAL)
+  {
+    fprintf (fptr, "%8s %4s %6s %9s %9s %9s", "r", "i", "inwind", "t_e", "t_r", "w");
+  }
+  else
+  {
+    fprintf (fptr, "%8s %8s %4s %4s %6s %9s %9s %9s", "x", "z", "i", "j", "inwind", "t_e", "t_r", "w");
+  }
+
+  for (n = 0; n < nlte_levels; n++)
+  {
+    m = cfg[n];
+    if (m < 0)
+    {
+      sprintf (colname, "unused_%04d", n);
+    }
+    else
+    {
+      nion = xconfig[m].nion;
+      k = n - ion[nion].first_levden;
+      sprintf (colname, "%.4s%d_%02d", ele[ion[nion].nelem].name, xconfig[m].istate, k);
+    }
+    fprintf (fptr, " %15s", colname);
+  }
+  fprintf (fptr, "\n");
+
+  for (i = 0; i < ndim2; i++)
+  {
+    nplasma = wmain[nstart + i].nplasma;
+
+    if (zdom[ndom].coord_type == SPHERICAL)
+    {
+      fprintf (fptr, "%8.2e %4d %6d", wmain[nstart + i].r, i, wmain[nstart + i].inwind);
+    }
+    else
+    {
+      wind_n_to_ij (ndom, nstart + i, &ii, &jj);
+      fprintf (fptr, "%8.2e %8.2e %4d %4d %6d", wmain[nstart + i].xcen[0], wmain[nstart + i].xcen[2], ii, jj,
+               wmain[nstart + i].inwind);
+    }
+
+    if (wmain[nstart + i].inwind >= 0 || xedge)
+    {
+      fprintf (fptr, " %9.3e %9.3e %9.3e", plasmamain[nplasma].t_e, plasmamain[nplasma].t_r, plasmamain[nplasma].w);
+      for (n = 0; n < nlte_levels; n++)
+      {
+        fprintf (fptr, " %15.8e", plasmamain[nplasma].levden[n]);
+      }
+    }
+    else
+    {
+      fprintf (fptr, " %9.3e %9.3e %9.3e", 0.0, 0.0, 0.0);
+      for (n = 0; n < nlte_levels; n++)
+      {
+        fprintf (fptr, " %15.8e", 0.0);
+      }
+    }
+    fprintf (fptr, "\n");
+  }
+
+  fclose (fptr);
+  free (cfg);
+
+  Log ("create_levden_table: wrote %d levels for %d cells to %s\n", nlte_levels, ndim2, filename);
+
+  return (0);
+}
+
+
+/**********************************************************/
+/**
+ * @brief      makes an astropy table of the frequency-resolved CONTINUUM
+ *   opacity in every wind cell, using sirocco's own opacity routines
+ *
+ * @param [in] int  ndom   The domain number
+ * @param [in] char  rootname[]   The rootname of the windsave file
+ * @return     0 on completion
+ *
+ * @details
+ *
+ * Three files are written:
+ *
+ *   rootname.opacity.txt       one row per wind cell; r, i, inwind, ne, rho,
+ *                              kbf_nuse, then bf_NNNN, ff_NNNN and es_NNNN for
+ *                              each frequency of the grid
+ *   rootname.opacity_freq.txt  the frequency grid, in Hz and in eV
+ *   rootname.opacity_check.txt the self-check described below
+ *
+ * The values are kappa PER UNIT LENGTH (cm^-1), which is what sirocco itself
+ * accumulates: sirocco_optd_trans.c forms kappa_bf + kappa_ff + klein_nishina *
+ * ne and multiplies by a path length to get an optical depth.  Divide by rho
+ * for a mass opacity.
+ *
+ * ### Notes ###
+ *
+ * NO MEAN IS FORMED HERE.  The frequency-resolved opacity is written out and
+ * the Planck or Rosseland mean, over whatever group structure the comparison
+ * needs, is formed downstream.  Baking a mean into C would fix a definition in
+ * the place where it is least visible, and the two means differ enormously for
+ * line opacity, so which one is in use has to stay legible.
+ *
+ * ⚠️ THIS IS CONTINUUM ONLY: bound-free plus free-free plus electron
+ * scattering.  Line opacity is NOT included and is NOT extractable this way --
+ * for macro ions it lives in the macro-atom state and for simple ions it is
+ * built per line inside two_level_atom, which stores nothing per cell.  An
+ * absent line bump in a plot of this table is a MISSING MEASUREMENT and not a
+ * physical statement about sirocco.
+ *
+ * ⚠️ kappa_bf SUMS A PRUNED LIST.  kbf_need() fills xplasma->kbf_use with the
+ * bf transitions whose threshold lies in (freq_min/3, freq_max) and whose
+ * optical depth over a typical in-cell path exceeds 1e-6 (plus every macro,
+ * ground-state and vfky transition regardless).  That pruning is the transfer's
+ * own, so this reproduces the opacity sirocco applied -- but the frequency
+ * window matters, and the window used here is the span of the dump grid, which
+ * may be wider than the banding the run itself used.  kbf_nuse is written per
+ * cell so the size of the retained list is visible.
+ *
+ * ⚠️ kappa_ff READS plasmamain[].kappa_ff_factor, which is populated by
+ * pop_kappa_ff_array() in run.c just before the photons are transported, and is
+ * a plain struct member so it is restored with the windsave.  Rather than
+ * assume that, the routine evaluates kappa_ff before and after recomputing the
+ * factor and writes both to the check file: if the restored value had been
+ * stale or zero the two would differ, and this would say so instead of
+ * silently using a wrong opacity.
+ *
+ **********************************************************/
+
+#define OPAC_NFREQ   700
+#define OPAC_FMIN    1.0e12
+#define OPAC_FMAX    1.0e19
+
+int
+create_opacity_table (ndom, rootname)
+     int ndom;
+     char rootname[];
+{
+  char filename[132];
+  int nstart, ndim2;
+  int i, j, n, nplasma;
+  double *nu;
+  double lf0, lf1, dlf;
+  double kbf, kff, kes;
+  double ff_before, ff_after, worst, rel;
+  double *ff_pre;
+  int worst_cell;
+  double nu_probe;
+  PlasmaPtr xp;
+  FILE *fptr;
+
+  nstart = zdom[ndom].nstart;
+  ndim2 = zdom[ndom].ndim2;
+
+  /* The frequency grid, logarithmic */
+
+  nu = (double *) calloc (sizeof (double), OPAC_NFREQ);
+  if (nu == NULL)
+  {
+    Error ("create_opacity_table: could not allocate the frequency grid\n");
+    return (0);
+  }
+  lf0 = log10 (OPAC_FMIN);
+  lf1 = log10 (OPAC_FMAX);
+  dlf = (lf1 - lf0) / (OPAC_NFREQ - 1);
+  for (j = 0; j < OPAC_NFREQ; j++)
+  {
+    nu[j] = pow (10.0, lf0 + j * dlf);
+  }
+
+  sprintf (filename, "%.100s.opacity_freq.txt", rootname);
+  fptr = fopen (filename, "w");
+  fprintf (fptr, "%6s %14s %14s\n", "col", "nu_Hz", "E_eV");
+  for (j = 0; j < OPAC_NFREQ; j++)
+  {
+    fprintf (fptr, "%6d %14.7e %14.7e\n", j, nu[j], nu[j] * HEV);
+  }
+  fclose (fptr);
+
+  /* Select the bound-free transitions to be summed, over the whole span of the
+     dump grid so that every frequency written has its edges considered. */
+
+  kbf_need (OPAC_FMIN, OPAC_FMAX);
+
+  /* The self-check on kappa_ff_factor.  Probe at a frequency where free-free
+     is not negligible; the absolute value does not matter, only whether
+     recomputing the factor changes it. */
+
+  nu_probe = 1.0e14;
+  worst = 0.0;
+  worst_cell = -1;
+
+  ff_pre = (double *) calloc (sizeof (double), ndim2);
+  if (ff_pre == NULL)
+  {
+    Error ("create_opacity_table: could not allocate the ff check array\n");
+    free (nu);
+    return (0);
+  }
+  for (i = 0; i < ndim2; i++)
+  {
+    ff_pre[i] = -1.0;
+    if (wmain[nstart + i].inwind >= 0)
+    {
+      ff_pre[i] = kappa_ff (&plasmamain[wmain[nstart + i].nplasma], nu_probe);
+    }
+  }
+
+  pop_kappa_ff_array ();
+
+  sprintf (filename, "%.100s.opacity_check.txt", rootname);
+  fptr = fopen (filename, "w");
+  fprintf (fptr, "# kappa_ff before vs after pop_kappa_ff_array(), at nu = %.4e Hz.\n", nu_probe);
+  fprintf (fptr, "# kappa_ff_factor is a plain member of the plasma structure and so should be\n");
+  fprintf (fptr, "# restored with the windsave.  If that is true these two columns agree and\n");
+  fprintf (fptr, "# the check passes.  If the restored factor had been stale or zero they\n");
+  fprintf (fptr, "# would differ, and every free-free value in the table would be suspect.\n");
+  /* commented so the whole file loads with a plain comments="#" reader */
+  fprintf (fptr, "#%5s %17s %17s %14s\n", "cell", "ff_restored", "ff_recomputed", "rel_diff");
+
+  for (i = 0; i < ndim2; i++)
+  {
+    if (ff_pre[i] < 0.0)
+      continue;
+    ff_before = ff_pre[i];
+    ff_after = kappa_ff (&plasmamain[wmain[nstart + i].nplasma], nu_probe);
+    if (ff_before > 0.0)
+    {
+      rel = fabs (ff_after - ff_before) / ff_before;
+    }
+    else
+    {
+      rel = (ff_after == 0.0) ? 0.0 : 1.0;
+    }
+    if (rel > worst)
+    {
+      worst = rel;
+      worst_cell = i;
+    }
+    fprintf (fptr, "%6d %17.9e %17.9e %14.5e\n", i, ff_before, ff_after, rel);
+  }
+  fprintf (fptr, "# worst relative difference %.5e at cell %d -- %s\n", worst, worst_cell,
+           (worst < 1.0e-12) ? "PASS: the restored factor was already correct"
+           : "FAIL: the restored kappa_ff_factor was NOT usable, see the note above");
+  fclose (fptr);
+  free (ff_pre);
+
+  Log ("create_opacity_table: kappa_ff restore check, worst rel diff %.3e at cell %d\n", worst, worst_cell);
+
+  /* The table */
+
+  sprintf (filename, "%.100s.opacity.txt", rootname);
+  fptr = fopen (filename, "w");
+  fprintf (fptr, "%10s %5s %7s %12s %12s %9s", "r", "i", "inwind", "ne", "rho", "kbf_nuse");
+  for (j = 0; j < OPAC_NFREQ; j++)
+    fprintf (fptr, " %13s%04d", "bf_", j);
+  for (j = 0; j < OPAC_NFREQ; j++)
+    fprintf (fptr, " %13s%04d", "ff_", j);
+  for (j = 0; j < OPAC_NFREQ; j++)
+    fprintf (fptr, " %13s%04d", "es_", j);
+  fprintf (fptr, "\n");
+
+  for (i = 0; i < ndim2; i++)
+  {
+    n = nstart + i;
+    fprintf (fptr, "%10.4e %5d %7d", wmain[n].r, i, wmain[n].inwind);
+
+    if (wmain[n].inwind >= 0 || xedge)
+    {
+      nplasma = wmain[n].nplasma;
+      xp = &plasmamain[nplasma];
+      fprintf (fptr, " %12.5e %12.5e %9d", xp->ne, xp->rho, xp->kbf_nuse);
+      for (j = 0; j < OPAC_NFREQ; j++)
+      {
+        kbf = kappa_bf (xp, nu[j], 0);
+        fprintf (fptr, " %17.9e", kbf);
+      }
+      for (j = 0; j < OPAC_NFREQ; j++)
+      {
+        kff = kappa_ff (xp, nu[j]);
+        fprintf (fptr, " %17.9e", kff);
+      }
+      for (j = 0; j < OPAC_NFREQ; j++)
+      {
+        kes = klein_nishina (nu[j]) * xp->ne * zdom[ndom].fill;
+        fprintf (fptr, " %17.9e", kes);
+      }
+    }
+    else
+    {
+      fprintf (fptr, " %12.5e %12.5e %9d", 0.0, 0.0, 0);
+      for (j = 0; j < 3 * OPAC_NFREQ; j++)
+        fprintf (fptr, " %17.9e", 0.0);
+    }
+    fprintf (fptr, "\n");
+  }
+  fclose (fptr);
+  free (nu);
+
+  Log ("create_opacity_table: wrote %d frequencies x %d cells to %s\n", OPAC_NFREQ, ndim2, filename);
+
+  return (0);
+}
+
+
+/**********************************************************/
+/**
+ * @brief      makes an astropy table of the frequency-binned LINE absorption
+ *   coefficient in every wind cell, from sirocco's own level populations
+ *
+ * @param [in] int  ndom   The domain number
+ * @param [in] char  rootname[]   The rootname of the windsave file
+ * @return     0 on completion
+ *
+ * @details
+ *
+ * Writes rootname.lineopac.txt: one row per cell, and one column per bin of
+ * the same 700-point logarithmic frequency grid the -opac table uses, holding
+ *
+ *     sum over lines in the bin of   (pi e^2 / m_e c) * n_l^eff * f_lu
+ *
+ * which is the FREQUENCY-INTEGRATED line absorption coefficient in that bin,
+ * units cm^-1 Hz.  Divide by rho for a mass opacity, by the bin width for a
+ * mean kappa_nu across the bin, or Planck-weight the bins to compare against a
+ * group-mean table.
+ *
+ * n_l^eff = d1 - (gl/gu) d2 is the stimulated-emission-corrected lower level
+ * density, exactly as sobolev() forms it in resonate.c.  The populations come
+ * from the same two routes sobolev uses and are not recomputed here:
+ *
+ *   macro lines   den_config(), i.e. the macro-atom levden populations
+ *   simple lines  two_level_atom(), which builds the lower level from
+ *                 line_ptr->el, the cell's dilution w and t_r
+ *
+ * ### Notes ###
+ *
+ * ⚠️ THIS IS THE QUANTITY, NOT A SOBOLEV OPTICAL DEPTH.  sobolev() divides by
+ * dvds to get a depth; that extra factor is geometry and velocity field, not
+ * opacity, and it would make the table incomparable with a tabulated kappa.
+ * The integrated coefficient is written instead and any depth is formed
+ * downstream from it and the run's own dvds.
+ *
+ * ⚠️ WHAT THIS DOES AND DOES NOT MEASURE ABOUT NLTE.  For macro species (H, He
+ * here) the lower level is a real non-LTE population.  For every other element
+ * it is two_level_atom's on-the-spot dilute-Boltzmann estimate, and sirocco's
+ * own source flags that treatment as unresolved at lines.c:310 ("I don't
+ * believe what one should do with metastable lower levels is worked out, either
+ * in the program... or conceptually").  A comparison against an LTE table
+ * therefore measures the difference between an LTE population and THAT
+ * estimate, which is a real and quotable difference but is not a statement
+ * that sirocco's metal line populations are correct.
+ *
+ * ⚠️ Under the matrix_pow / matrix_est ionization modes the partition functions
+ * entering two_level_atom are ground-state-only, because
+ * partition_functions(NEBULARMODE_LTE_GROUND) sets weight = 0.  That biases
+ * every simple-ion line here in a way that is not separated out.
+ *
+ **********************************************************/
+
+int
+create_line_opacity_table (ndom, rootname)
+     int ndom;
+     char rootname[];
+{
+  char filename[132];
+  int nstart, ndim2;
+  int i, j, n, nplasma;
+  double *nu, *bin;
+  double lf0, lf1, dlf;
+  double d1, d2, xden, contrib;
+  long nskip_neg, nused;
+  PlasmaPtr xp;
+  FILE *fptr;
+
+  nstart = zdom[ndom].nstart;
+  ndim2 = zdom[ndom].ndim2;
+
+  nu = (double *) calloc (sizeof (double), OPAC_NFREQ);
+  bin = (double *) calloc (sizeof (double), OPAC_NFREQ);
+  if (nu == NULL || bin == NULL)
+  {
+    Error ("create_line_opacity_table: allocation failed\n");
+    return (0);
+  }
+  lf0 = log10 (OPAC_FMIN);
+  lf1 = log10 (OPAC_FMAX);
+  dlf = (lf1 - lf0) / (OPAC_NFREQ - 1);
+  for (j = 0; j < OPAC_NFREQ; j++)
+    nu[j] = pow (10.0, lf0 + j * dlf);
+
+  sprintf (filename, "%.100s.lineopac.txt", rootname);
+  fptr = fopen (filename, "w");
+  fprintf (fptr, "%10s %5s %7s %12s %10s", "r", "i", "inwind", "rho", "nline");
+  for (j = 0; j < OPAC_NFREQ; j++)
+    fprintf (fptr, " %13s%04d", "lint_", j);
+  fprintf (fptr, "\n");
+
+  nskip_neg = 0;
+
+  for (i = 0; i < ndim2; i++)
+  {
+    n = nstart + i;
+    fprintf (fptr, "%10.4e %5d %7d", wmain[n].r, i, wmain[n].inwind);
+
+    for (j = 0; j < OPAC_NFREQ; j++)
+      bin[j] = 0.0;
+    nused = 0;
+
+    if (wmain[n].inwind >= 0 || xedge)
+    {
+      nplasma = wmain[n].nplasma;
+      xp = &plasmamain[nplasma];
+
+      for (j = 0; j < nlines; j++)
+      {
+        if (line[j].freq < OPAC_FMIN || line[j].freq >= OPAC_FMAX)
+          continue;
+
+        /* The same branch sobolev() takes, so the populations are the ones the
+           transfer used rather than a second opinion. */
+        if (line[j].macro_info == TRUE && geo.rt_mode == RT_MODE_MACRO && geo.macro_simple == FALSE)
+        {
+          d1 = den_config (xp, line[j].nconfigl);
+          d2 = den_config (xp, line[j].nconfigu);
+        }
+        else
+        {
+          two_level_atom (&line[j], xp, &d1, &d2);
+        }
+
+        xden = d1 - line[j].gl / line[j].gu * d2;
+        if (xden <= 0.0)
+        {
+          /* a population inversion, or numerically zero; sobolev() treats this
+             as no opacity, and so does this.  Counted, not hidden. */
+          nskip_neg++;
+          continue;
+        }
+
+        contrib = PI_E2_OVER_MC * xden * line[j].f;
+        {
+          int k = (int) ((log10 (line[j].freq) - lf0) / dlf + 0.5);
+          if (k < 0)
+            k = 0;
+          if (k >= OPAC_NFREQ)
+            k = OPAC_NFREQ - 1;
+          bin[k] += contrib;
+        }
+        nused++;
+      }
+      fprintf (fptr, " %12.5e %10ld", xp->rho, nused);
+    }
+    else
+    {
+      fprintf (fptr, " %12.5e %10d", 0.0, 0);
+    }
+
+    for (j = 0; j < OPAC_NFREQ; j++)
+      fprintf (fptr, " %17.9e", bin[j]);
+    fprintf (fptr, "\n");
+  }
+
+  fclose (fptr);
+  free (nu);
+  free (bin);
+
+  Log ("create_line_opacity_table: %d lines over %d cells; %ld line-cell pairs skipped for xden <= 0\n",
+       nlines, ndim2, nskip_neg);
+
+  return (0);
+}
 
 
 /**********************************************************/

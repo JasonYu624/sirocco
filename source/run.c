@@ -374,7 +374,9 @@ calculate_ionization (restart_stat)
       {
         strcpy (dummy, "");
         sprintf (dummy, "diag_%.100s/%.100s.%02d", files.root, files.root, geo.wcycle);
-        do_windsave2table (dummy, 0, FALSE);
+        /* lev_switch / opac_switch added by the -lev and -opac commits;
+           FALSE here preserves this diagnostic path's prior behaviour. */
+        do_windsave2table (dummy, 0, FALSE, FALSE, FALSE);
       }
       if (modes.keep_ioncycle_spectra)
       {
