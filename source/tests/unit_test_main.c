@@ -76,6 +76,8 @@ main (int argc, char **argv)
 
   /* Create test suites */
   create_matrix_test_suite ();
+  /* LQ: early, so a failure in a later suite that leaves an input file open (opar ... Exit) cannot skip it */
+  create_theta_table_test_suite ();
   create_compton_test_suite ();
   create_define_wind_test_suite ();
 //  create_run_mode_test_suite ();

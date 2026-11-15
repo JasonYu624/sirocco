@@ -201,7 +201,7 @@ theta_table_band_lum (double freqmin, double freqmax)
 
 
 /* Cumulative band luminosity over (k, g) for [freqmin, freqmax]; rebuilt only when the band changes. */
-static double
+double
 theta_table_cdf (double freqmin, double freqmax)
 {
   double sum = 0.0, lo, hi;
@@ -224,7 +224,7 @@ theta_table_cdf (double freqmin, double freqmax)
 
 
 /* Frequency, position and direction of one packet; returns its polar bin. */
-static int
+int
 theta_table_sample (PhotPtr pp, double r, double freqmin, double freqmax)
 {
   double u, lo, hi, mu, s, phi, st, f, amax, mup, smup, psi, n[3], a[3], e1[3], e2[3];
