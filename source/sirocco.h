@@ -717,6 +717,7 @@ struct geometry
 #define PL_GEOMETRY_LAMP_POST 1
 #define PL_GEOMETRY_BUBBLE 2
 #define PL_GEOMETRY_ISO 3
+#define PL_GEOMETRY_THETA_TABLE 4       /**< LQ: a sphere whose emission is tabulated in polar angle and frequency (agn.c) */
   double lamp_post_height;      /**<  height of X-ray point source if lamp post */
   double bubble_size;           /**<  size of a bubble if any */
 

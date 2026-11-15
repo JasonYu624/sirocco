@@ -23,6 +23,267 @@
 #include "log.h"
 
 
+/* ------------------------------------------------------------------------------------------------------------------
+ * LQ (2026-11-14): a central source tabulated in polar angle and frequency.
+ *   Central_object.geometry_for_source  theta_table
+ *   Central_object.theta_table_file     <file>
+ * Purpose: inject at the inner sphere what another code (Pasta) emits OUTWARD through that sphere, per polar-angle
+ * bin and frequency group, instead of one SED from a uniform sphere.  Inward radiation reaching the sphere is
+ * handled as for any central object (Surface.reflection.or.absorption).
+ *
+ * File: whitespace-separated numbers, '#' starts a comment.  In order:
+ *   nth nnu
+ *   nth+1 polar-angle edges [deg], ascending, 0 .. 90 (the z > 0 hemisphere; z < 0 is its mirror image)
+ *   nnu+1 frequency edges [Hz], ascending
+ *   nth   P1 anisotropy f_k = F/(cE) of each bin (clamped to [-1/3, 1/3])
+ *   nth*nnu  outward luminosity L[k][g] [erg/s] of bin k in group g, BOTH hemispheres together, row by row in k
+ * Its total must equal Central_object.luminosity (setup_star_bh.c stops the run otherwise).
+ *
+ * A packet: (k, g) drawn in proportion to the band's luminosity; frequency uniform over the group's part of the band
+ * (L_nu constant across a group); position uniform in AREA on the zone theta_k..theta_k+1 of the sphere, either
+ * hemisphere; direction with pdf mu (1 + 3 f_k mu) on the outward hemisphere, mu = cos(angle to the normal) -- the
+ * emergent form of the P1 intensity I(mu) ~ 1 + 3 f mu that a p1_vector boundary imposes.  Every packet carries the
+ * caller's weight (band luminosity / number), as for the other geometries.
+ * ------------------------------------------------------------------------------------------------------------------ */
+
+static int thtab_nth = 0, thtab_nnu = 0;
+static double *thtab_th = NULL;        /* polar-angle edges [rad] */
+static double *thtab_nu = NULL;        /* frequency edges [Hz] */
+static double *thtab_fk = NULL;        /* P1 anisotropy per polar bin */
+static double *thtab_L = NULL;         /* L[k * nnu + g] [erg/s] */
+static double *thtab_cdf = NULL;       /* cumulative band luminosity over (k, g) */
+static double thtab_cdf_f1 = -1.0, thtab_cdf_f2 = -1.0;
+
+double
+theta_table_read (char *file)
+{
+  FILE *fp;
+  static char line[65536];
+  char *tok, *hash, *end;
+  double *v = NULL, total, fk;
+  int nv = 0, nalloc = 0, need, k, g, i, nclamp = 0;
+
+  if ((fp = fopen (file, "r")) == NULL)
+  {
+    Error ("theta_table_read: cannot open %s\n", file);
+    Exit (1);
+  }
+  while (fgets (line, sizeof (line), fp) != NULL)
+  {
+    if (strlen (line) == sizeof (line) - 1 && line[sizeof (line) - 2] != '\n')
+    {
+      Error ("theta_table_read: a line of %s is longer than %d characters\n", file, (int) sizeof (line) - 2);
+      Exit (1);
+    }
+    if ((hash = strchr (line, '#')) != NULL)
+      *hash = '\0';
+    for (tok = strtok (line, " \t\r\n"); tok != NULL; tok = strtok (NULL, " \t\r\n"))
+    {
+      if (nv == nalloc)
+      {
+        nalloc = nalloc ? 2 * nalloc : 4096;
+        v = realloc (v, nalloc * sizeof (double));
+      }
+      v[nv] = strtod (tok, &end);
+      if (*end != '\0')
+      {
+        Error ("theta_table_read: %s: '%s' is not a number\n", file, tok);
+        Exit (1);
+      }
+      nv++;
+    }
+  }
+  fclose (fp);
+
+  if (nv < 2 || v[0] < 1 || v[1] < 1 || v[0] != (int) v[0] || v[1] != (int) v[1])
+  {
+    Error ("theta_table_read: %s must start with two positive integers nth nnu\n", file);
+    Exit (1);
+  }
+  thtab_nth = (int) v[0];
+  thtab_nnu = (int) v[1];
+  need = 2 + (thtab_nth + 1) + (thtab_nnu + 1) + thtab_nth + thtab_nth * thtab_nnu;
+  if (nv != need)
+  {
+    Error ("theta_table_read: %s holds %d numbers, expected %d for nth %d nnu %d\n", file, nv, need, thtab_nth, thtab_nnu);
+    Exit (1);
+  }
+
+  thtab_th = calloc (thtab_nth + 1, sizeof (double));
+  thtab_nu = calloc (thtab_nnu + 1, sizeof (double));
+  thtab_fk = calloc (thtab_nth, sizeof (double));
+  thtab_L = calloc (thtab_nth * thtab_nnu, sizeof (double));
+  thtab_cdf = calloc (thtab_nth * thtab_nnu, sizeof (double));
+
+  i = 2;
+  for (k = 0; k <= thtab_nth; k++)
+    thtab_th[k] = v[i++] / RADIAN;
+  for (g = 0; g <= thtab_nnu; g++)
+    thtab_nu[g] = v[i++];
+  for (k = 0; k < thtab_nth; k++)
+  {
+    fk = v[i++];
+    if (fk > 1. / 3. || fk < -1. / 3.)
+    {
+      nclamp++;
+      fk = (fk > 0) ? 1. / 3. : -1. / 3.;
+    }
+    thtab_fk[k] = fk;
+  }
+  total = 0.0;
+  for (k = 0; k < thtab_nth * thtab_nnu; k++)
+  {
+    thtab_L[k] = v[i++];
+    if (!(thtab_L[k] >= 0.0) || isinf (thtab_L[k]))
+    {
+      Error ("theta_table_read: %s: L[%d][%d] = %e is not a finite non-negative number\n", file, k / thtab_nnu,
+             k % thtab_nnu, thtab_L[k]);
+      Exit (1);
+    }
+    total += thtab_L[k];
+  }
+  free (v);
+
+  if (fabs (thtab_th[0]) > 1e-9 || fabs (thtab_th[thtab_nth] - 0.5 * PI) > 1e-6)
+  {
+    Error ("theta_table_read: %s: polar edges must run from 0 to 90 deg, not %g to %g\n", file, thtab_th[0] * RADIAN,
+           thtab_th[thtab_nth] * RADIAN);
+    Exit (1);
+  }
+  for (k = 0; k < thtab_nth; k++)
+    if (!(thtab_th[k + 1] > thtab_th[k]))
+    {
+      Error ("theta_table_read: %s: polar edges not ascending at %d\n", file, k);
+      Exit (1);
+    }
+  for (g = 0; g < thtab_nnu; g++)
+    if (!(thtab_nu[g + 1] > thtab_nu[g]) || !(thtab_nu[g] > 0.0))
+    {
+      Error ("theta_table_read: %s: frequency edges not positive and ascending at %d\n", file, g);
+      Exit (1);
+    }
+  if (!(total > 0.0))
+  {
+    Error ("theta_table_read: %s: total luminosity %e\n", file, total);
+    Exit (1);
+  }
+
+  Log ("theta_table: %s: %d polar bins x %d groups (%.6e - %.6e Hz), total %.10e erg/s, %d anisotropies clamped to 1/3\n",
+       file, thtab_nth, thtab_nnu, thtab_nu[0], thtab_nu[thtab_nnu], total, nclamp);
+  for (k = 0; k < thtab_nth; k++)
+  {
+    double lk = 0.0;
+    for (g = 0; g < thtab_nnu; g++)
+      lk += thtab_L[k * thtab_nnu + g];
+    Log ("theta_table:   bin %3d  %7.3f - %7.3f deg  L fraction %.6e  f %+.5f\n", k, thtab_th[k] * RADIAN,
+         thtab_th[k + 1] * RADIAN, lk / total, thtab_fk[k]);
+  }
+  return (total);
+}
+
+
+/* The table's luminosity in [freqmin, freqmax]: L_nu constant across each group. */
+double
+theta_table_band_lum (double freqmin, double freqmax)
+{
+  double sum = 0.0, lo, hi;
+  int k, g;
+  for (k = 0; k < thtab_nth; k++)
+    for (g = 0; g < thtab_nnu; g++)
+    {
+      lo = (thtab_nu[g] > freqmin) ? thtab_nu[g] : freqmin;
+      hi = (thtab_nu[g + 1] < freqmax) ? thtab_nu[g + 1] : freqmax;
+      if (hi > lo)
+        sum += thtab_L[k * thtab_nnu + g] * (hi - lo) / (thtab_nu[g + 1] - thtab_nu[g]);
+    }
+  return (sum);
+}
+
+
+/* Cumulative band luminosity over (k, g) for [freqmin, freqmax]; rebuilt only when the band changes. */
+static double
+theta_table_cdf (double freqmin, double freqmax)
+{
+  double sum = 0.0, lo, hi;
+  int k, g;
+  if (freqmin == thtab_cdf_f1 && freqmax == thtab_cdf_f2)
+    return (thtab_cdf[thtab_nth * thtab_nnu - 1]);
+  for (k = 0; k < thtab_nth; k++)
+    for (g = 0; g < thtab_nnu; g++)
+    {
+      lo = (thtab_nu[g] > freqmin) ? thtab_nu[g] : freqmin;
+      hi = (thtab_nu[g + 1] < freqmax) ? thtab_nu[g + 1] : freqmax;
+      if (hi > lo)
+        sum += thtab_L[k * thtab_nnu + g] * (hi - lo) / (thtab_nu[g + 1] - thtab_nu[g]);
+      thtab_cdf[k * thtab_nnu + g] = sum;
+    }
+  thtab_cdf_f1 = freqmin;
+  thtab_cdf_f2 = freqmax;
+  return (sum);
+}
+
+
+/* Frequency, position and direction of one packet; returns its polar bin. */
+static int
+theta_table_sample (PhotPtr pp, double r, double freqmin, double freqmax)
+{
+  double u, lo, hi, mu, s, phi, st, f, amax, mup, smup, psi, n[3], a[3], e1[3], e2[3];
+  int ilo, ihi, mid, k, g, j, ntot;
+
+  ntot = thtab_nth * thtab_nnu;
+  u = random_number (0.0, 1.0) * thtab_cdf[ntot - 1];
+  ilo = 0;
+  ihi = ntot - 1;
+  while (ilo < ihi)             /* the first (k, g) whose cumulative luminosity exceeds u */
+  {
+    mid = (ilo + ihi) / 2;
+    if (thtab_cdf[mid] > u)
+      ihi = mid;
+    else
+      ilo = mid + 1;
+  }
+  k = ilo / thtab_nnu;
+  g = ilo % thtab_nnu;
+
+  lo = (thtab_nu[g] > freqmin) ? thtab_nu[g] : freqmin;
+  hi = (thtab_nu[g + 1] < freqmax) ? thtab_nu[g + 1] : freqmax;
+  pp->freq = random_number (lo, hi);
+
+  mu = random_number (cos (thtab_th[k + 1]), cos (thtab_th[k]));        /* uniform in area on the zone */
+  s = (random_number (-1.0, 1.0) > 0.0) ? 1.0 : -1.0;
+  phi = random_number (0.0, 2.0 * PI);
+  st = sqrt (1.0 - mu * mu > 0.0 ? 1.0 - mu * mu : 0.0);
+  pp->x[0] = r * st * cos (phi);
+  pp->x[1] = r * st * sin (phi);
+  pp->x[2] = s * r * mu;
+
+  f = thtab_fk[k];              /* mu' with pdf ~ mu' (1 + 3 f mu'): Lambert proposal, rejection on (1 + 3 f mu') */
+  amax = (f > 0.0) ? 1.0 + 3.0 * f : 1.0;
+  do
+  {
+    mup = sqrt (random_number (0.0, 1.0));
+  }
+  while (random_number (0.0, 1.0) * amax > 1.0 + 3.0 * f * mup);
+  smup = sqrt (1.0 - mup * mup > 0.0 ? 1.0 - mup * mup : 0.0);
+  psi = random_number (0.0, 2.0 * PI);
+
+  for (j = 0; j < 3; j++)
+    n[j] = pp->x[j] / r;
+  a[0] = a[1] = a[2] = 0.0;
+  if (fabs (n[2]) < 0.9)
+    a[2] = 1.0;
+  else
+    a[0] = 1.0;
+  cross (a, n, e1);
+  renorm (e1, 1.0);
+  cross (n, e1, e2);
+  for (j = 0; j < 3; j++)
+    pp->lmn[j] = smup * cos (psi) * e1[j] + smup * sin (psi) * e2[j] + mup * n[j];
+  renorm (pp->lmn, 1.0);
+  return (k);
+}
+
+
 /**********************************************************/
 /** 
  * @brief      Calculates the total luminosity of an AGN type source
@@ -67,6 +328,12 @@ agn_init (r, lum, alpha, freqmin, freqmax, ioniz_or_extract, f)
   int nwav;
   int spectype;
   static int norm_logged = FALSE;       //LQ: state the normalisation once per run, not once per band
+
+  if (geo.pl_geometry == PL_GEOMETRY_THETA_TABLE)       /* LQ: the table is the source; no spectype applies */
+  {
+    *f = theta_table_band_lum (freqmin, freqmax);
+    return (*f);
+  }
 
   if (ioniz_or_extract == CYCLE_EXTRACT)
     spectype = geo.agn_spectype;        /* type for final spectrum */
@@ -418,6 +685,8 @@ photo_gen_agn (p, r, alpha, weight, f1, f2, spectype, istart, nphot)
   int i, iend;
   int n;
   double ftest;
+  int thtab_k;                  /* LQ: theta_table polar bin of the current packet */
+  static int *thtab_count = NULL;       /* LQ: packets per polar bin in this call */
 
   t = alpha;                    /* NSH 130605, this is a slightly odd statmenent, put in to avoid 03 compilation 
                                    errors, but stemming from the odd behaviour that one can give the AGN a 
@@ -442,6 +711,21 @@ photo_gen_agn (p, r, alpha, weight, f1, f2, spectype, istart, nphot)
 
   /* Generate photons just outside the photosphere unnecessary for the AGN perhaps? */
   /* note this is only used in the spherical source */
+
+  if (geo.pl_geometry == PL_GEOMETRY_THETA_TABLE)
+  {
+    /* LQ: the band's cumulative luminosity, and per-bin counters for the diagnostic line */
+    if (!(theta_table_cdf (freqmin, freqmax) > 0.0) && nphot > 0)
+    {
+      Error ("photo_gen_agn: theta_table has no luminosity in %e - %e Hz but %d packets were asked for\n", freqmin,
+             freqmax, nphot);
+      Exit (1);
+    }
+    if (thtab_count == NULL)
+      thtab_count = calloc (thtab_nth, sizeof (int));
+    for (n = 0; n < thtab_nth; n++)
+      thtab_count[n] = 0;
+  }
 
   if (spectype == SPECTYPE_CL_TAB)      /* If we have a broken PL, we need to work out which alpha to use */
   {
@@ -468,7 +752,12 @@ photo_gen_agn (p, r, alpha, weight, f1, f2, spectype, istart, nphot)
     p[i].nres = -1;             // It's a continuum photon - so it is not made in a resonance
     p[i].nnscat = 1;            // Set to one scatter
 
-    if (spectype == SPECTYPE_BB)        //Blackbody spectrum, we use the supplied temperature
+    if (geo.pl_geometry == PL_GEOMETRY_THETA_TABLE)     /* LQ: frequency, position and direction all from the table */
+    {
+      thtab_k = theta_table_sample (&p[i], r, freqmin, freqmax);
+      thtab_count[thtab_k]++;
+    }
+    else if (spectype == SPECTYPE_BB)   //Blackbody spectrum, we use the supplied temperature
     {
       p[i].freq = planck (t, freqmin, freqmax);
     }
@@ -516,6 +805,11 @@ photo_gen_agn (p, r, alpha, weight, f1, f2, spectype, istart, nphot)
       stuff_v (geo.searchlight_x, p[i].x);
       stuff_v (geo.searchlight_lmn, p[i].lmn);
     }
+    else if (geo.pl_geometry == PL_GEOMETRY_THETA_TABLE)
+    {
+      /* LQ: placed and pointed by theta_table_sample above */
+    }
+
     /*  original spherical X-ray source as used in e.g. Higginbottom+ 2013 */
 
     else if (geo.pl_geometry == PL_GEOMETRY_SPHERE)
@@ -592,6 +886,30 @@ photo_gen_agn (p, r, alpha, weight, f1, f2, spectype, istart, nphot)
     /* This is a diagnostic mode one can use to look at photon origins  */
     //if (modes.save_photons && geo.ioniz_or_extract == CYCLE_EXTRACT)
     //  save_photons (&p[i], "AGN");
+  }
+
+  if (geo.pl_geometry == PL_GEOMETRY_THETA_TABLE && nphot > 0)
+  {
+    /* LQ: packets generated per polar bin against the table's expectation for this band (this rank) */
+    static char msg[16384];
+    int k, g, len;
+    double lk, lo, hi, tot = thtab_cdf[thtab_nth * thtab_nnu - 1];
+    len = snprintf (msg, sizeof (msg), "theta_table: %d packets in %.4e-%.4e Hz; bin:generated/expected", nphot, freqmin,
+                    freqmax);
+    for (k = 0; k < thtab_nth && len < (int) sizeof (msg) - 64; k++)
+    {
+      lk = 0.0;
+      for (g = 0; g < thtab_nnu; g++)
+      {
+        lo = (thtab_nu[g] > freqmin) ? thtab_nu[g] : freqmin;
+        hi = (thtab_nu[g + 1] < freqmax) ? thtab_nu[g + 1] : freqmax;
+        if (hi > lo)
+          lk += thtab_L[k * thtab_nnu + g] * (hi - lo) / (thtab_nu[g + 1] - thtab_nu[g]);
+      }
+      if (thtab_count[k] > 0 || lk > 0.0)
+        len += snprintf (msg + len, sizeof (msg) - len, " %d:%d/%.1f", k, thtab_count[k], nphot * lk / tot);
+    }
+    Log ("%s\n", msg);
   }
 
 

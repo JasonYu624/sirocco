@@ -337,7 +337,7 @@ get_bl_and_agn_params (lstar)
       rddoub ("@Central_object.power_law_cutoff", &geo.pl_low_cutoff);
 
     strcpy (answer, "sphere");
-    geo.pl_geometry = rdchoice ("Central_object.geometry_for_source(sphere,lamp_post,bubble,iso)", "0,1,2,3", answer);
+    geo.pl_geometry = rdchoice ("Central_object.geometry_for_source(sphere,lamp_post,bubble,iso,theta_table)", "0,1,2,3,4", answer);
 
 
     if (geo.pl_geometry == PL_GEOMETRY_LAMP_POST)
@@ -351,6 +351,22 @@ get_bl_and_agn_params (lstar)
       rddoub ("Central_object.bubble_size(r_g)", &geo.bubble_size);
       geo.bubble_size *= GRAV * geo.mstar / VLIGHT / VLIGHT;    //get it in CGS units
       Log ("bubble size  in cm is %g\n", geo.bubble_size);
+    }
+    else if (geo.pl_geometry == PL_GEOMETRY_THETA_TABLE)
+    {
+      /* LQ: the source's luminosity per polar-angle bin and frequency group comes from a table (agn.c,
+         theta_table_read).  The table IS the source, so its total must be the luminosity the deck states:
+         a mismatch means the deck and the table were written for different runs, and the run stops. */
+      char thtab_file[LINELENGTH];
+      double ltab;
+      strcpy (thtab_file, "theta_table.txt");
+      rdstr ("Central_object.theta_table_file", thtab_file);
+      ltab = theta_table_read (thtab_file);
+      if (geo.lum_agn <= 0.0 || fabs (ltab / geo.lum_agn - 1.0) > 1.e-6)
+      {
+        Error ("theta_table: table total %.10e erg/s != Central_object.luminosity %.10e erg/s. Fatal.\n", ltab, geo.lum_agn);
+        Exit (1);
+      }
     }
     else if (geo.pl_geometry != PL_GEOMETRY_SPHERE && geo.pl_geometry != PL_GEOMETRY_ISO)     // only four options at the moment
     {

@@ -3,6 +3,8 @@ double agn_init(double r, double lum, double alpha, double freqmin, double freqm
 double emittance_pow(double freqmin, double freqmax, double alpha);
 double emittance_bpow(double freqmin, double freqmax, double alpha);
 int photo_gen_agn(PhotPtr p, double r, double alpha, double weight, double f1, double f2, int spectype, int istart, int nphot);
+double theta_table_read(char *file);
+double theta_table_band_lum(double freqmin, double freqmax);
 /* anisowind.c */
 int randwind_thermal_trapping(PhotPtr p, int *nnscat);
 /* atomic_extern_init.c */
