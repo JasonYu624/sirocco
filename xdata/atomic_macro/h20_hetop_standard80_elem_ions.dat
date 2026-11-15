@@ -6,32 +6,55 @@
 
 
 # Source Verner, Barthel & Tytler 1994 A&AS 108, 287
-Element    1    H   12.00     1.007940
-Element    2   He   10.99     4.002602
+#
+# ---------------------------------------------------------------------------
+# ABUNDANCES REALIGNED 2026-08-19 -- LQ project.
+#
+# The ACTIVE Element lines below carry AGSS09 values (restricted to the 20
+# elements FreeEOS implements), with the 12 metals shifted by +0.0037 dex so
+# that the total metal mass fraction returns to Pasta's Z after the six
+# elements sirocco does not have (P, Cl, Ti, Cr, Mn, Ni; 0.87% of Z) are
+# dropped.  Result: X=0.7374 Y=0.2492 Z=0.01336, matching the Pasta opacity
+# and EOS tables, which are built on the same pattern.
+#
+# WHY: the two codes are compared cell by cell in an overlap region, and the
+# original Verner+94 pattern differs by 40% in Z and 15% in He.  Helium matters
+# here beyond n_e: the multigroup frequency faces are placed ON the He II edge
+# (54.42 eV), so He sets the strength of the feature the comparison is about.
+#
+# The COMMENTED-OUT Element lines are untouched and are still Verner+94.
+# Uncommenting one without converting it will reintroduce the mismatch.
+#
+# Original file: h20_hetop_standard80_elem_ions.dat.verner94_backup
+# Reproduce:     Workspace/analysis/lq_abundance_alignment.py --apply
+# ---------------------------------------------------------------------------
+#
+Element    1    H  12.0000     1.007940
+Element    2   He  10.9300     4.002602
 #Element    3   Li    3.31     6.941000
 #Element    4   Be    1.42     9.012182
 #Element    5    B    2.88    10.811000
-Element    6    C    8.56    12.011000
-Element    7    N    8.05    14.006740
-Element    8    O    8.93    15.999400
+Element    6    C   8.4337    12.011000
+Element    7    N   7.8337    14.006740
+Element    8    O   8.6937    15.999400
 #Element    9    F    4.48    18.998403
-Element   10   Ne    8.09    20.179700
-Element   11   Na    6.31    22.989768
-Element   12   Mg    7.58    24.305000
-Element   13   Al    6.48    26.981539
-Element   14   Si    7.55    28.085500
+Element   10   Ne   7.9337    20.179700
+Element   11   Na   6.2437    22.989768
+Element   12   Mg   7.6037    24.305000
+Element   13   Al   6.4537    26.981539
+Element   14   Si   7.5137    28.085500
 #Element   15    P    5.57    30.973762
-Element   16    S    7.27    32.066000
+Element   16    S   7.1237    32.066000
 #Element   17   Cl    5.27    35.452700
-Element   18   Ar    6.56    39.948000
+Element   18   Ar   6.4037    39.948000
 #Element   19    K    5.13    39.098300
-Element   20   Ca    6.34    40.078000
+Element   20   Ca   6.3437    40.078000
 #Element   21   Sc    3.09    44.955910
 #Element   22   Ti    4.93    47.880000
 #Element   23    V    4.02    50.941500
 #Element   24   Cr    5.68    51.996100
 #Element   25   Mn    5.53    54.938050
-Element   26   Fe    7.51    55.847000
+Element   26   Fe   7.5037    55.847000
 # Element   27   Co    4.91    58.933200
 #Element   28   Ni    6.25    58.690000
 # Element   29   Cu    4.27    63.546000

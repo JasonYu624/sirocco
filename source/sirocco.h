@@ -145,7 +145,15 @@ extern int NWAVE_NOW;         /**< Either NWAVE_IONIZ or NWAVE_EXTRACT depending
                                 */
 #define NWAVE_MIN   100       /**< The minimum number of wavelength bins in during spectral cycles
                                */
+/* LQ project, 2026-08-23: guarded so the cap can be overridden at build time
+   (-DMAXSCAT=...) without editing this file.  The default is unchanged, so a
+   plain build is bit-identical to upstream.  Needed because both R1 depth arms
+   hit the cap -- max scatters seen 19893 (tau_es=10) and 19986 (tau_es=30) --
+   so "does the cap bias the answer" became a question that has to be measured
+   rather than assumed. */
+#ifndef MAXSCAT
 #define MAXSCAT    20000
+#endif
 
 /* Define the structures */
 #include "math_struc.h"
@@ -710,6 +718,7 @@ struct geometry
 #define PL_GEOMETRY_LAMP_POST 1
 #define PL_GEOMETRY_BUBBLE 2
 #define PL_GEOMETRY_ISO 3
+#define PL_GEOMETRY_THETA_TABLE 4       /**< LQ: a sphere whose emission is tabulated in polar angle and frequency (agn.c) */
   double lamp_post_height;      /**<  height of X-ray point source if lamp post */
   double bubble_size;           /**<  size of a bubble if any */
 
@@ -1639,6 +1648,12 @@ struct advanced_modes
                                   * is to seed the random number generated with a fixed seed,
                                   * not based on time.  The decision of which seed to use
                                   * is set by the command line option --rseed*/
+  int agn_norm_2_10kev;         /**< LQ, 2026-09-28.  When TRUE, a `models` central source is
+                                  * normalised so that Central_object.luminosity is its 2-10keV
+                                  * luminosity (the upstream AGN convention).  The default
+                                  * (FALSE) normalises on the model SED's OWN band, so the key
+                                  * is the source's total luminosity whatever the SED spans.
+                                  * Set by the command line option --agn-norm-2-10kev */
   int photon_speedup;           /**< The default is for each ionization cycle to have the same
                                   * number of photons bundles.  However, one can by using
                                   * the command lines swich -p cause the number of photons

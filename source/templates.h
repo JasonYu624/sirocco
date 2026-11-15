@@ -3,6 +3,8 @@ double agn_init(double r, double lum, double alpha, double freqmin, double freqm
 double emittance_pow(double freqmin, double freqmax, double alpha);
 double emittance_bpow(double freqmin, double freqmax, double alpha);
 int photo_gen_agn(PhotPtr p, double r, double alpha, double weight, double f1, double f2, int spectype, int istart, int nphot);
+double theta_table_read(char *file);
+double theta_table_band_lum(double freqmin, double freqmax);
 /* anisowind.c */
 int randwind_thermal_trapping(PhotPtr p, int *nnscat);
 /* atomic_extern_init.c */
@@ -345,10 +347,10 @@ double get_matom_f_accelerate(int mode);
 /* macro_gov.c */
 int macro_gov(PhotPtr p, int *nres, int matom_or_kpkt, int *which_out);
 int macro_pops(PlasmaPtr xplasma, double xne);
-int macro_pops_fill_rate_matrix(MacroPtr mplasma, PlasmaPtr xplasma, double xne, int index_element, double rate_matrix[600][600], int radiative_flag[600][600], int conf_to_matrix[600]);
-int macro_pops_check_for_population_inversion(int index_element, double *populations, int radiative_flag[600][600], int conf_to_matrix[600]);
-int macro_pops_check_densities_for_numerical_errors(PlasmaPtr xplasma, int index_element, double *populations, int conf_to_matrix[600], int n_iterations);
-void macro_pops_copy_to_xplasma(PlasmaPtr xplasma, int index_element, double *populations, int conf_to_matrix[600]);
+int macro_pops_fill_rate_matrix(MacroPtr mplasma, PlasmaPtr xplasma, double xne, int index_element, double rate_matrix[NLEVELS_MACRO][NLEVELS_MACRO], int radiative_flag[NLEVELS_MACRO][NLEVELS_MACRO], int conf_to_matrix[NLEVELS_MACRO]);
+int macro_pops_check_for_population_inversion(int index_element, double *populations, int radiative_flag[NLEVELS_MACRO][NLEVELS_MACRO], int conf_to_matrix[NLEVELS_MACRO]);
+int macro_pops_check_densities_for_numerical_errors(PlasmaPtr xplasma, int index_element, double *populations, int conf_to_matrix[NLEVELS_MACRO], int n_iterations);
+void macro_pops_copy_to_xplasma(PlasmaPtr xplasma, int index_element, double *populations, int conf_to_matrix[NLEVELS_MACRO]);
 /* matom.c */
 int matom(PhotPtr p, int *nres, int *escape);
 double b12(struct lines *line_ptr);
