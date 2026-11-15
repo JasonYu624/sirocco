@@ -32,7 +32,13 @@ extern int nlte_levels;                /**<  Actual number of levels to treat ex
 
 
 /* AUGER NOTE: recommended to increase NLEVELS_MACRO to at least 500 for Auger macro-atoms */
+/* LQ: every macro-atom limit below can be set at compile time (-DNLEVELS_MACRO=..., via the Makefile's EXTRA_FLAGS)
+   without touching LARGE_MACRO_ATOMS, whose TRUE branch also LOWERS NTOP_PHOT from 1000 to 600.  The Fe XVII-XXVII
+   macro data (xdata/fe_17to27.dat) carry 1332 Auger records against NAUGER_MACRO 200, and H, He, C, N, O + that Fe
+   set has 785 macro levels against 600.  Without the flags every value is the upstream default. */
+#ifndef NLEVELS_MACRO
 #define NLEVELS_MACRO   600     /**<  Maximum number of macro atom levels. (SS, June 04) */
+#endif
 extern int nlevels_macro;              /**<  Actual number of macro atom levels. (SS, June 04) */
 #define NLINES 		200000  /**<  Maximum number of lines to be read */
 extern int nlines;                     /**<  Actual number of lines that were read in */
@@ -45,14 +51,26 @@ extern int n_inner_tot;                /**< The actual number of inner shell ion
 #define LARGE_MACRO_ATOMS FALSE 
 /* sometimes we have to compile with larger hardwired values here for large macro-atoms e.g. Fe17to27 dataset */
 #if LARGE_MACRO_ATOMS
+  #ifndef NBBJUMPS
   #define NBBJUMPS         200    /**<  Maximum number of Macro Atom bound-bound jumps from any one configuration (SS) */
+  #endif
+  #ifndef NBFJUMPS
   #define NBFJUMPS         200    /**<  Maximum number of Macro Atom Bound-free jumps from any one configuration (SS) */
+  #endif
+  #ifndef NAUGER_MACRO
   #define NAUGER_MACRO     2000        /* number of Auger processes */
+  #endif
 #else
   /* AUGER NOTE: recommended to increase these values to at least 200 for Auger macro-atoms */
+  #ifndef NBBJUMPS
   #define NBBJUMPS         100    /**<  Maximum number of Macro Atom bound-bound jumps from any one configuration (SS) */
+  #endif
+  #ifndef NBFJUMPS
   #define NBFJUMPS         100    /**<  Maximum number of Macro Atom Bound-free jumps from any one configuration (SS) */
+  #endif
+  #ifndef NAUGER_MACRO
   #define NAUGER_MACRO     200        /* number of Auger processes */
+  #endif
 #endif
 
 extern int nauger_macro;        /* the number of auger processes read in associated with macro atoms */
@@ -320,11 +338,13 @@ extern double inner_freq_min;          /**< The lowest frequency for which inner
 
 #define NCROSS 3000            /**<  Maximum number of x-sections for a single photionization process */
 
+#ifndef NTOP_PHOT
 #if LARGE_MACRO_ATOMS
   #define NTOP_PHOT 600           /**<  Maximum number of photoionisation processes.  */
 #else
   /* AUGER NOTE: recommended to increase NTOP_PHOT to 1000 for Auger macro-atoms */
   #define NTOP_PHOT 1000           /**<  Maximum number of photoionisation processes.  */
+#endif
 #endif
 extern int ntop_phot;                  /**<  The actual number of TopBase photoionzation x-sections */
 extern int nphot_total;                /**<  total number of photoionzation x-sections = nxphot + ntop_phot */
