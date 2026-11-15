@@ -279,6 +279,18 @@ main (argc, argv)
         plasmamain[np].rho = 1.e-30;
         for (nion = 0; nion < nions; nion++)
           plasmamain[np].density[nion] = 1.e-30;
+        /* LQ 2026-11-14: in macro-atom mode the spectral cycles' wind emission is get_matom_f()'s, driven by the
+           absorbed-energy estimators kpkt_abs and matom_abs[] of the LAST IONIZATION CYCLE, which are written to the
+           wind_save (windsave.c) and zeroed only when an ionization cycle starts (init_macro_rad_properties).  With
+           Ionization_cycles = 0 a cut cell would be transparent but still emit what it absorbed before the cut.
+           Zero them too, so the cut removes the cell's emission as well as its opacity. */
+        plasmamain[np].kpkt_abs = 0.0;
+        if (geo.rt_mode == RT_MODE_MACRO)
+        {
+          int nl;
+          for (nl = 0; nl < nlevels_macro; nl++)
+            macromain[np].matom_abs[nl] = 0.0;
+        }
         ncut++;
       }
     }
